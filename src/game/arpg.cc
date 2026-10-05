@@ -17,6 +17,7 @@
 #include "game/display.h"
 #include "game/game.h"
 #include "game/gconfig.h"
+#include "game/gmouse.h"
 #include "game/gsound.h"
 #include "game/intface.h"
 #include "game/inventry.h"
@@ -35,6 +36,9 @@
 #include "plib/color/color.h"
 #include "plib/gnw/debug.h"
 #include "plib/gnw/input.h"
+#include "plib/gnw/kb.h"
+#include "plib/gnw/mouse.h"
+#include "plib/gnw/svga.h"
 
 namespace fallout {
 
@@ -69,6 +73,21 @@ static int stagger_pct = 8;
 static int leash_distance = 30;
 static bool show_numbers = true;
 static bool always_run = true;
+static bool labels_always = false;
+static bool hold_to_move = true;
+static bool loot_drops = true;
+static int loot_pct = 100;
+static int energy_regen_pct = 100;
+
+// Energy (the blue globe) fuels special attacks.
+static double energy = -1.0;
+static unsigned int last_energy_tick = 0;
+static bool player_special = false;
+
+static unsigned int next_hold_action = 0;
+static int hold_last_tile = -1;
+
+static std::vector<int> loot_table;
 static bool autoplay = false;
 static unsigned int autoplay_warp_time = 0;
 static bool autoplay_warped = false;
@@ -124,6 +143,8 @@ static bool player_chasing = false;
 static unsigned int player_next_attack = 0;
 static unsigned int player_next_repath = 0;
 
+static void arpg_drop_loot(Object* victim);
+
 static void arpg_release(ArpgAttack* aa)
 {
     aa->refs -= 1;
@@ -173,6 +194,11 @@ bool arpg_always_run()
     return arpg_on && always_run;
 }
 
+bool arpg_labels_always()
+{
+    return labels_always;
+}
+
 bool arpg_autotest()
 {
     return arpg_test;
@@ -200,10 +226,15 @@ void arpg_init()
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_ammo", &autotest_ammo_pid);
 
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "always_run", &always_run);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "hold_to_move", &hold_to_move);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "labels_always", &labels_always);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "loot_drops", &loot_drops);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "loot_pct", &loot_pct);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "energy_regen_pct", &energy_regen_pct);
 
     // Command-line test switches are merged into game_config, which CE saves
     // back to fallout.cfg on exit. Neutralize them so they don't stick.
-    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo" };
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items" };
     for (const char* key : testKeys) {
         char* value;
         if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
@@ -245,8 +276,11 @@ void arpg_reset()
     arpg_free_crit_list();
     player_target = NULL;
     player_chasing = false;
+    player_special = false;
     alert_until = 0;
     next_list_refresh = 0;
+    last_energy_tick = 0;
+    arpg_hud_reset();
 }
 
 static bool arpg_alive(Object* critter)
@@ -471,7 +505,7 @@ static bool arpg_sequence_attack(ArpgAttack* aa)
     return true;
 }
 
-static bool arpg_start_attack(Object* attacker, Object* defender, int hitMode)
+static bool arpg_start_attack(Object* attacker, Object* defender, int hitMode, int hitLocation = HIT_LOCATION_TORSO)
 {
     if (hitMode == HIT_MODE_PUNCH && roll_random(1, 4) == 1) {
         int fid = art_id(OBJ_TYPE_CRITTER, attacker->fid & 0xFFF, ANIM_KICK_LEG, (attacker->fid & 0xF000) >> 12, (attacker->fid & 0x70000000) >> 28);
@@ -482,7 +516,7 @@ static bool arpg_start_attack(Object* attacker, Object* defender, int hitMode)
 
     ArpgAttack* aa = new ArpgAttack();
     memset(&(aa->attack), 0, sizeof(aa->attack));
-    combat_ctd_init(&(aa->attack), attacker, defender, hitMode, HIT_LOCATION_TORSO);
+    combat_ctd_init(&(aa->attack), attacker, defender, hitMode, hitLocation);
 
     if (combat_compute_attack(&(aa->attack)) == -1) {
         delete aa;
@@ -645,6 +679,9 @@ static void arpg_resolve(ArpgAttack* aa)
 
     if ((defender->data.critter.combat.results & DAM_DEAD) != 0 && defender != obj_dude) {
         stat_kills++;
+        if ((attacker == obj_dude || isPartyMember(attacker)) && !isPartyMember(defender)) {
+            arpg_drop_loot(defender);
+        }
     }
 
     if (attacker == obj_dude && (defender->data.critter.combat.results & DAM_DEAD) != 0) {
@@ -718,6 +755,38 @@ bool arpg_is_attackable(Object* critter)
         && !obj_action_can_talk_to(critter);
 }
 
+int arpg_energy_max()
+{
+    if (obj_dude == NULL) {
+        return 0;
+    }
+    return stat_level(obj_dude, STAT_MAXIMUM_ACTION_POINTS) * 10;
+}
+
+int arpg_energy()
+{
+    return energy < 0 ? 0 : (int)energy;
+}
+
+static void arpg_energy_tick(unsigned int now)
+{
+    int maxEnergy = arpg_energy_max();
+    if (energy < 0) {
+        energy = maxEnergy;
+    }
+
+    if (last_energy_tick != 0 && now > last_energy_tick) {
+        // Regenerate max AP points per second (x energy_regen_pct).
+        double perSecond = stat_level(obj_dude, STAT_MAXIMUM_ACTION_POINTS) * energy_regen_pct / 100.0;
+        energy += perSecond * (now - last_energy_tick) / 1000.0;
+    }
+    last_energy_tick = now;
+
+    if (energy > maxEnergy) {
+        energy = maxEnergy;
+    }
+}
+
 void arpg_player_attack(Object* target)
 {
     if (target == NULL || target == obj_dude) {
@@ -727,6 +796,19 @@ void arpg_player_attack(Object* target)
     player_target = target;
     player_chasing = false;
     player_next_repath = 0;
+    player_special = false;
+}
+
+void arpg_player_special(Object* target)
+{
+    if (target == NULL || target == obj_dude) {
+        return;
+    }
+
+    player_target = target;
+    player_chasing = false;
+    player_next_repath = 0;
+    player_special = true;
 }
 
 void arpg_player_clear_target()
@@ -843,9 +925,224 @@ static void arpg_player_tick(unsigned int now)
 
     player_chasing = false;
 
+    int hitLocation = HIT_LOCATION_TORSO;
+
+    if (player_special) {
+        // Right-click special: burst fire if the weapon has it, otherwise an
+        // aimed shot at the head. Costs energy (10 per AP).
+        player_special = false;
+
+        int specialMode = hitMode;
+        bool aimed = true;
+        if (hitMode == HIT_MODE_LEFT_WEAPON_PRIMARY || hitMode == HIT_MODE_RIGHT_WEAPON_PRIMARY) {
+            int secondary = hitMode + 1;
+            int secondaryAnim = item_w_anim(obj_dude, secondary);
+            if (secondaryAnim == ANIM_FIRE_BURST || secondaryAnim == ANIM_FIRE_CONTINUOUS) {
+                specialMode = secondary;
+                aimed = false;
+            }
+        }
+
+        int cost = item_w_mp_cost(obj_dude, specialMode, aimed) * 10;
+        if (arpg_energy() < cost) {
+            arpg_float_text(obj_dude, "Need energy", colorTable[992]);
+            gsound_play_sfx_file("iisxxxx1");
+        } else {
+            energy -= cost;
+            hitMode = specialMode;
+            if (aimed) {
+                hitLocation = HIT_LOCATION_HEAD;
+                arpg_float_text(obj_dude, "Aimed shot!", colorTable[992]);
+            } else {
+                arpg_float_text(obj_dude, "Burst!", colorTable[992]);
+            }
+            arpg_log("ARPG: special %s cost=%d energy=%d\n", aimed ? "aimed" : "burst", cost, arpg_energy());
+        }
+
+        // A special is a single action; don't keep auto-attacking afterwards
+        // unless the player clicks again.
+        Object* target = player_target;
+        if (arpg_start_attack(obj_dude, target, hitMode, hitLocation)) {
+            player_next_attack = now + arpg_attack_delay(obj_dude, hitMode);
+        }
+        player_target = NULL;
+        return;
+    }
+
     if (arpg_start_attack(obj_dude, player_target, hitMode)) {
         player_next_attack = now + arpg_attack_delay(obj_dude, hitMode);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Loot (Diablo-style drops scattered around the corpse)
+// ---------------------------------------------------------------------------
+
+static void arpg_build_loot_table()
+{
+    loot_table.clear();
+    static const int excluded[] = { 19, 79, 205, 120, 161, 162, 163, 28 };
+    for (int pid = 1; pid < 600; pid++) {
+        Proto* proto;
+        if (proto_ptr(pid, &proto) == -1) {
+            continue;
+        }
+        if (proto->item.type != ITEM_TYPE_WEAPON && proto->item.type != ITEM_TYPE_ARMOR) {
+            continue;
+        }
+        if (proto->item.cost < 30) {
+            continue;
+        }
+        bool skip = false;
+        for (int ex : excluded) {
+            if (ex == pid) {
+                skip = true;
+            }
+        }
+        if (!skip) {
+            loot_table.push_back(pid);
+        }
+    }
+    arpg_log("ARPG: loot table has %d items\n", (int)loot_table.size());
+}
+
+static int arpg_free_tile_near(Object* origin)
+{
+    for (int attempt = 0; attempt < 12; attempt++) {
+        int rotation = roll_random(0, 5);
+        int distance = roll_random(1, 2);
+        int tile = tile_num_in_direction(origin->tile, rotation, distance);
+        if (tile >= 0 && obj_blocking_at(NULL, tile, origin->elevation) == NULL) {
+            return tile;
+        }
+    }
+    return origin->tile;
+}
+
+static Object* arpg_drop_item(Object* corpse, int pid, int quantity)
+{
+    Object* item;
+    if (obj_pid_new(&item, pid) != 0) {
+        return NULL;
+    }
+
+    if (pid == PROTO_ID_MONEY) {
+        item_caps_set_amount(item, quantity);
+    }
+
+    Rect rect;
+    int tile = arpg_free_tile_near(corpse);
+    obj_move_to_tile(item, tile, corpse->elevation, &rect);
+    tile_refresh_rect(&rect, corpse->elevation);
+    return item;
+}
+
+static void arpg_drop_loot(Object* victim)
+{
+    if (!loot_drops) {
+        return;
+    }
+
+    if (loot_table.empty()) {
+        arpg_build_loot_table();
+    }
+
+    int xp = critter_kill_exps(victim);
+
+    if (roll_random(1, 100) <= 55 * loot_pct / 100) {
+        arpg_drop_item(victim, PROTO_ID_MONEY, roll_random(1, 3 + xp / 3));
+    }
+
+    if (roll_random(1, 100) <= 10 * loot_pct / 100) {
+        arpg_drop_item(victim, PROTO_ID_STIMPACK, 1);
+    }
+
+    if (roll_random(1, 100) <= 20 * loot_pct / 100) {
+        int hitMode;
+        bool aiming;
+        if (intface_get_attack(&hitMode, &aiming) != -1) {
+            Object* weapon = item_hit_with(obj_dude, hitMode);
+            if (weapon != NULL && item_w_max_ammo(weapon) > 0) {
+                int ammoPid = item_w_ammo_pid(weapon);
+                if (ammoPid > 0) {
+                    arpg_drop_item(victim, ammoPid, 1);
+                }
+            }
+        }
+    }
+
+    int gearChance = (8 + std::min(xp / 20, 15)) * loot_pct / 100;
+    if (!loot_table.empty() && roll_random(1, 100) <= gearChance) {
+        int budget = 300 + xp * 25;
+        std::vector<int> eligible;
+        for (int pid : loot_table) {
+            Proto* proto;
+            if (proto_ptr(pid, &proto) != -1 && proto->item.cost <= budget) {
+                eligible.push_back(pid);
+            }
+        }
+        if (!eligible.empty()) {
+            int pid = eligible[roll_random(0, (int)eligible.size() - 1)];
+            Object* item = arpg_drop_item(victim, pid, 1);
+            if (item != NULL) {
+                arpg_log("ARPG: %s dropped %s\n", critter_name(victim), item_name(item));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hold-to-move (hold the left button to keep running toward the cursor)
+// ---------------------------------------------------------------------------
+
+static void arpg_hold_tick(unsigned int now)
+{
+    if (!hold_to_move) {
+        return;
+    }
+
+    int buttons = mouse_get_buttons();
+    if ((buttons & MOUSE_EVENT_LEFT_BUTTON_REPEAT) == 0) {
+        hold_last_tile = -1;
+        return;
+    }
+
+    if (gmouse_3d_get_mode() != GAME_MOUSE_MODE_MOVE || !intface_is_enabled() || intface_is_hidden()) {
+        return;
+    }
+
+    int mouseX;
+    int mouseY;
+    mouse_get_position(&mouseX, &mouseY);
+    if (mouseY >= screenGetHeight() - 100) {
+        return;
+    }
+
+    if (now < next_hold_action) {
+        return;
+    }
+    next_hold_action = now + 300;
+
+    Object* critter = object_under_mouse(OBJ_TYPE_CRITTER, false, map_elevation);
+    if (critter != NULL && arpg_is_attackable(critter)) {
+        if (player_target != critter) {
+            arpg_player_attack(critter);
+        }
+        return;
+    }
+
+    if (player_target != NULL) {
+        return;
+    }
+
+    int tile = tile_num(mouseX, mouseY, map_elevation);
+    if (tile == -1 || tile == hold_last_tile || tile == obj_dude->tile) {
+        return;
+    }
+
+    hold_last_tile = tile;
+    register_clear(obj_dude);
+    dude_run(-1);
 }
 
 static bool arpg_wants_to_join(Object* critter)
@@ -1019,6 +1316,16 @@ void arpg_tick()
 
     if (arpg_test) {
         if (autotest_start == 0) {
+            bool dumpItems = false;
+            configGetBool(&game_config, ARPG_CONFIG_SECTION, "dump_items", &dumpItems);
+            if (dumpItems) {
+                for (int pid = 1; pid < 600; pid++) {
+                    Proto* proto;
+                    if (proto_ptr(pid, &proto) != -1) {
+                        arpg_log("ITEM %d type=%d cost=%d name=%s\n", pid, proto->item.type, proto->item.cost, proto_name(pid));
+                    }
+                }
+            }
             autotest_start = now;
             arpg_log("ARPG autotest start, map %d elevation %d\n", map_get_index_number(), map_elevation);
         }
@@ -1048,7 +1355,8 @@ void arpg_tick()
             if (item_add_force(obj_dude, weapon, 1) == 0) {
                 obj_disconnect(weapon, NULL);
             }
-            inven_wield(obj_dude, weapon, 1);
+            // Left hand is the active slot on a new game.
+            inven_wield(obj_dude, weapon, 0);
             if (autotest_ammo_pid != -1) {
                 Object* ammo;
                 if (obj_pid_new(&ammo, autotest_ammo_pid) == 0) {
@@ -1093,14 +1401,19 @@ void arpg_tick()
                     }
                 }
             }
-            if (best != NULL) {
+            if (best != NULL && arpg_energy() >= arpg_energy_max()) {
+                arpg_player_special(best);
+            } else if (best != NULL) {
                 arpg_log("ARPG autoplay: targeting %s\n", critter_name(best));
                 arpg_player_attack(best);
             }
         }
     }
 
+    arpg_energy_tick(now);
+    arpg_hold_tick(now);
     arpg_player_tick(now);
+    arpg_hud_tick(now);
 
     bool alert = now < alert_until;
     bool joinCheck = alert && now >= next_join_check;

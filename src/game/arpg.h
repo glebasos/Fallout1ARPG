@@ -15,6 +15,7 @@ void arpg_init();
 void arpg_reset();
 bool arpg_enabled();
 bool arpg_always_run();
+bool arpg_labels_always();
 
 // Called once per frame from the main game loop.
 void arpg_tick();
@@ -25,6 +26,13 @@ void arpg_request_combat(STRUCT_664980* attack);
 // Player intent.
 void arpg_player_attack(Object* target);
 void arpg_player_clear_target();
+void arpg_player_special(Object* target);
+int arpg_energy();
+int arpg_energy_max();
+
+// HUD (arpg_hud.cc): HP / energy globes and Alt item labels.
+void arpg_hud_tick(unsigned int now);
+void arpg_hud_reset();
 bool arpg_is_hostile(Object* critter);
 bool arpg_is_attackable(Object* critter);
 

@@ -867,6 +867,15 @@ void gmouse_handle_event(int mouseX, int mouseY, int mouseState)
 
     if ((mouseState & MOUSE_EVENT_RIGHT_BUTTON_DOWN) != 0) {
         if ((mouseState & MOUSE_EVENT_RIGHT_BUTTON_REPEAT) == 0) {
+            if (arpg_enabled() && gmouse_3d_current_mode == GAME_MOUSE_MODE_MOVE) {
+                // Diablo-style: right-click an enemy for a special attack.
+                Object* target = object_under_mouse(OBJ_TYPE_CRITTER, false, map_elevation);
+                if (target != NULL && arpg_is_attackable(target)) {
+                    arpg_player_special(target);
+                    return;
+                }
+            }
+
             if (gmouse_3d_is_on()) {
                 gmouse_3d_toggle_mode();
             }
@@ -877,6 +886,14 @@ void gmouse_handle_event(int mouseX, int mouseY, int mouseState)
     if ((mouseState & MOUSE_EVENT_LEFT_BUTTON_UP) != 0) {
         if (gmouse_3d_current_mode == GAME_MOUSE_MODE_MOVE) {
             if (arpg_enabled()) {
+                // Diablo-style: clicking loot picks it up.
+                Object* item = object_under_mouse(OBJ_TYPE_ITEM, false, map_elevation);
+                if (item != NULL) {
+                    arpg_player_clear_target();
+                    action_get_an_object(obj_dude, item);
+                    return;
+                }
+
                 // Diablo-style: clicking an enemy attacks it.
                 Object* target = object_under_mouse(OBJ_TYPE_CRITTER, false, map_elevation);
                 if (target != NULL && arpg_is_attackable(target)) {

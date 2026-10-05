@@ -1087,6 +1087,10 @@ static int game_screendump(int width, int height, unsigned char* buffer, unsigne
         return -1;
     }
 
+    if (arpg_autotest()) {
+        return 0;
+    }
+
     // Saved screenshot.
     messageListItem.num = 3;
     if (message_search(&misc_message_file, &messageListItem)) {

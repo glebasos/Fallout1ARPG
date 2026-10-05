@@ -68,6 +68,7 @@ static int player_delay_pct = 100;
 static int stagger_pct = 8;
 static int leash_distance = 30;
 static bool show_numbers = true;
+static bool always_run = true;
 static bool autoplay = false;
 static unsigned int autoplay_warp_time = 0;
 static bool autoplay_warped = false;
@@ -76,6 +77,14 @@ static int autoshot_ms = 0;
 static unsigned int autotest_start = 0;
 static unsigned int next_autoshot = 0;
 static FILE* arpg_log_file = NULL;
+static int autotest_weapon_pid = -1;
+static int autotest_ammo_pid = -1;
+static bool autotest_armed = false;
+static unsigned int autoplay_idle_since = 0;
+static int stat_attacks = 0;
+static int stat_attack_fail = 0;
+static int stat_react_blocked = 0;
+static int stat_kills = 0;
 
 static void arpg_log(const char* format, ...)
 {
@@ -159,6 +168,11 @@ bool arpg_enabled()
     return arpg_on;
 }
 
+bool arpg_always_run()
+{
+    return arpg_on && always_run;
+}
+
 bool arpg_autotest()
 {
     return arpg_test;
@@ -166,7 +180,7 @@ bool arpg_autotest()
 
 void arpg_init()
 {
-    bool enabled = false;
+    bool enabled = true;
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "enabled", &enabled);
     arpg_on = enabled;
 
@@ -182,12 +196,18 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autoplay", &autoplay);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_seconds", &autotest_seconds);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autoshot_ms", &autoshot_ms);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_weapon", &autotest_weapon_pid);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_ammo", &autotest_ammo_pid);
 
-    if (arpg_on) {
-        bool alwaysRun = true;
-        configGetBool(&game_config, ARPG_CONFIG_SECTION, "always_run", &alwaysRun);
-        if (alwaysRun) {
-            config_set_value(&game_config, GAME_CONFIG_PREFERENCES_KEY, GAME_CONFIG_RUNNING_KEY, 1);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "always_run", &always_run);
+
+    // Command-line test switches are merged into game_config, which CE saves
+    // back to fallout.cfg on exit. Neutralize them so they don't stick.
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo" };
+    for (const char* key : testKeys) {
+        char* value;
+        if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
+            config_set_value(&game_config, ARPG_CONFIG_SECTION, key, strcmp(key, "autotest_weapon") == 0 || strcmp(key, "autotest_ammo") == 0 ? -1 : 0);
         }
     }
 
@@ -205,6 +225,10 @@ static void arpg_free_crit_list()
 
 void arpg_reset()
 {
+    if (!arpg_on) {
+        return;
+    }
+
     for (ArpgAttack* aa : pending_hits) {
         arpg_release(aa);
     }
@@ -472,7 +496,11 @@ static bool arpg_start_attack(Object* attacker, Object* defender, int hitMode)
     aa->invalid = false;
     live_attacks.push_back(aa);
 
+    stat_attacks++;
+
     if (!arpg_sequence_attack(aa)) {
+        stat_attack_fail++;
+        arpg_log("ARPG: attack sequence failed %s -> %s\n", critter_name(attacker), critter_name(defender));
         live_attacks.erase(std::remove(live_attacks.begin(), live_attacks.end(), aa), live_attacks.end());
         delete aa;
         return false;
@@ -524,6 +552,8 @@ static void arpg_react(Attack* attack, Object* victim, int damage, int flags, in
 
     int rc = dies ? register_clear_force(victim) : register_clear(victim);
     if (rc == -2) {
+        stat_react_blocked++;
+        arpg_log("ARPG: reaction blocked on %s\n", critter_name(victim));
         return;
     }
 
@@ -613,6 +643,10 @@ static void arpg_resolve(ArpgAttack* aa)
         }
     }
 
+    if ((defender->data.critter.combat.results & DAM_DEAD) != 0 && defender != obj_dude) {
+        stat_kills++;
+    }
+
     if (attacker == obj_dude && (defender->data.critter.combat.results & DAM_DEAD) != 0) {
         player_target = NULL;
         player_chasing = false;
@@ -671,6 +705,19 @@ bool arpg_is_hostile(Object* critter)
     return false;
 }
 
+bool arpg_is_attackable(Object* critter)
+{
+    if (arpg_is_hostile(critter)) {
+        return true;
+    }
+
+    // Monsters (anything you can't talk to) are fair game on a plain click.
+    return arpg_alive(critter)
+        && critter != obj_dude
+        && !isPartyMember(critter)
+        && !obj_action_can_talk_to(critter);
+}
+
 void arpg_player_attack(Object* target)
 {
     if (target == NULL || target == obj_dude) {
@@ -726,7 +773,7 @@ static void arpg_player_tick(unsigned int now)
         return;
     }
 
-    if (!arpg_alive(player_target) || player_target->elevation != obj_dude->elevation || !arpg_on_map(player_target)) {
+    if (!arpg_on_map(player_target) || !arpg_alive(player_target) || player_target->elevation != obj_dude->elevation) {
         player_target = NULL;
         player_chasing = false;
         return;
@@ -982,17 +1029,42 @@ void arpg_tick()
         }
 
         if (autotest_seconds > 0 && now - autotest_start > (unsigned int)autotest_seconds * 1000) {
-            arpg_log("ARPG autotest done: dude hp=%d/%d xp=%d\n",
+            arpg_log("ARPG autotest done: dude hp=%d/%d xp=%d attacks=%d failed=%d react_blocked=%d kills=%d\n",
                 critter_get_hits(obj_dude),
                 stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS),
-                stat_pc_get(PC_STAT_EXPERIENCE));
+                stat_pc_get(PC_STAT_EXPERIENCE),
+                stat_attacks,
+                stat_attack_fail,
+                stat_react_blocked,
+                stat_kills);
             game_user_wants_to_quit = 2;
         }
     }
 
+    if (arpg_test && !autotest_armed && autotest_weapon_pid != -1) {
+        autotest_armed = true;
+        Object* weapon;
+        if (obj_pid_new(&weapon, autotest_weapon_pid) == 0) {
+            if (item_add_force(obj_dude, weapon, 1) == 0) {
+                obj_disconnect(weapon, NULL);
+            }
+            inven_wield(obj_dude, weapon, 1);
+            if (autotest_ammo_pid != -1) {
+                Object* ammo;
+                if (obj_pid_new(&ammo, autotest_ammo_pid) == 0) {
+                    if (item_add_force(obj_dude, ammo, 5) == 0) {
+                        obj_disconnect(ammo, NULL);
+                    }
+                }
+            }
+            intface_update_items(false);
+            arpg_log("ARPG autotest: armed with %s\n", item_name(weapon));
+        }
+    }
+
     if (autoplay) {
-        // Test bot: warp next to the nearest critter once, then keep
-        // attacking the nearest hostile.
+        // Test bot: warp next to the nearest critter whenever idle, and
+        // attack any monster within leash range.
         if (!autoplay_warped) {
             if (autoplay_warp_time == 0) {
                 autoplay_warp_time = now + 3000;
@@ -1000,13 +1072,22 @@ void arpg_tick()
                 autoplay_warped = true;
                 arpg_debug_warp_to_enemy();
             }
+        } else if (player_target == NULL && !anim_busy(obj_dude)) {
+            if (autoplay_idle_since == 0) {
+                autoplay_idle_since = now;
+            } else if (now - autoplay_idle_since > 5000) {
+                autoplay_idle_since = 0;
+                arpg_debug_warp_to_enemy();
+            }
+        } else {
+            autoplay_idle_since = 0;
         }
 
         if (player_target == NULL) {
             Object* best = NULL;
             for (int index = 0; index < crit_count; index++) {
                 Object* critter = crit_list[index];
-                if (arpg_is_hostile(critter) && obj_dist(critter, obj_dude) <= 15) {
+                if (arpg_is_attackable(critter) && obj_dist(critter, obj_dude) <= leash_distance) {
                     if (best == NULL || obj_dist(critter, obj_dude) < obj_dist(best, obj_dude)) {
                         best = critter;
                     }

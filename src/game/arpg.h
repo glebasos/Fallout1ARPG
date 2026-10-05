@@ -14,6 +14,7 @@ namespace fallout {
 void arpg_init();
 void arpg_reset();
 bool arpg_enabled();
+bool arpg_always_run();
 
 // Called once per frame from the main game loop.
 void arpg_tick();
@@ -25,6 +26,7 @@ void arpg_request_combat(STRUCT_664980* attack);
 void arpg_player_attack(Object* target);
 void arpg_player_clear_target();
 bool arpg_is_hostile(Object* critter);
+bool arpg_is_attackable(Object* critter);
 
 bool arpg_is_engaged(Object* critter);
 

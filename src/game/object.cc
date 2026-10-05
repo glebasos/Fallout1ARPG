@@ -6,6 +6,7 @@
 #include <algorithm>
 
 #include "game/anim.h"
+#include "game/arpg.h"
 #include "game/art.h"
 #include "game/combat.h"
 #include "game/critter.h"
@@ -2050,6 +2051,9 @@ Object* obj_top_environment(Object* object)
 // 0x47CE78
 void obj_remove_all()
 {
+    // ARPG keeps raw pointers to critters; drop them before objects go away.
+    arpg_reset();
+
     ObjectListNode* node;
     ObjectListNode* prev;
     ObjectListNode* next;

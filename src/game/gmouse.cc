@@ -879,7 +879,7 @@ void gmouse_handle_event(int mouseX, int mouseY, int mouseState)
             if (arpg_enabled()) {
                 // Diablo-style: clicking an enemy attacks it.
                 Object* target = object_under_mouse(OBJ_TYPE_CRITTER, false, map_elevation);
-                if (target != NULL && arpg_is_hostile(target)) {
+                if (target != NULL && arpg_is_attackable(target)) {
                     arpg_player_attack(target);
                     return;
                 }
@@ -895,6 +895,9 @@ void gmouse_handle_event(int mouseX, int mouseY, int mouseState)
 
             bool running;
             configGetBool(&game_config, GAME_CONFIG_PREFERENCES_KEY, GAME_CONFIG_RUNNING_KEY, &running);
+            if (arpg_always_run()) {
+                running = true;
+            }
 
             if (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) {
                 if (running) {

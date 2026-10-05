@@ -27,6 +27,7 @@
 #include "game/party.h"
 #include "game/perk.h"
 #include "game/proto.h"
+#include "game/queue.h"
 #include "game/protinst.h"
 #include "game/roll.h"
 #include "game/scripts.h"
@@ -149,6 +150,9 @@ static bool player_chasing = false;
 static unsigned int player_next_attack = 0;
 static unsigned int player_next_repath = 0;
 static int player_chase_failures = 0;
+static unsigned int dude_knockdown_time = 0;
+static unsigned int autotest_knockdown_at = 0;
+static bool autotest_knockdown_logged = false;
 static Object* player_unreachable = NULL;
 static unsigned int player_unreachable_until = 0;
 
@@ -930,6 +934,11 @@ static void arpg_player_tick(unsigned int now)
         return;
     }
 
+    if (autotest_knockdown_at != 0 && !autotest_knockdown_logged) {
+        autotest_knockdown_logged = true;
+        arpg_log("ARPG autotest: back on feet and fighting\n");
+    }
+
     int hitMode;
     bool aiming;
     if (intface_get_attack(&hitMode, &aiming) == -1) {
@@ -1496,6 +1505,21 @@ void arpg_tick()
         }
     }
 
+    bool knockdownTest = false;
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_knockdown", &knockdownTest);
+    if (arpg_test && knockdownTest && stat_attacks >= 2 && autotest_knockdown_at == 0) {
+        autotest_knockdown_at = now;
+        config_set_value(&game_config, ARPG_CONFIG_SECTION, "autotest_knockdown", 0);
+        // Simulate a knockout crit on the player through the real path.
+        register_clear_force(obj_dude);
+        obj_dude->data.critter.combat.results |= DAM_KNOCKED_OUT;
+        queue_add(100, obj_dude, NULL, EVENT_TYPE_KNOCKOUT);
+        register_begin(ANIMATION_REQUEST_RESERVED);
+        register_object_animate(obj_dude, ANIM_FALL_BACK, 0);
+        register_end();
+        arpg_log("ARPG autotest: knocking the player down\n");
+    }
+
     if (autoplay) {
         // Test bot drinks a "potion" (Q) at low life.
         static unsigned int nextHeal = 0;
@@ -1546,10 +1570,34 @@ void arpg_tick()
         }
     }
 
+    // The player gets up after a knockdown, like critters do. Vanilla handles
+    // this at the start of a combat turn, which never comes in real time.
+    if ((obj_dude->data.critter.combat.results & DAM_KNOCKED_DOWN) != 0
+        && (obj_dude->data.critter.combat.results & (DAM_KNOCKED_OUT | DAM_DEAD)) == 0) {
+        if (dude_knockdown_time == 0) {
+            dude_knockdown_time = now;
+            arpg_log("ARPG: player knocked down\n");
+        } else if (now - dude_knockdown_time > 1500 && !anim_busy(obj_dude)) {
+            combat_arpg_standup(obj_dude);
+            dude_knockdown_time = 0;
+            arpg_log("ARPG: player stood up\n");
+        }
+    } else {
+        dude_knockdown_time = 0;
+    }
+
     arpg_energy_tick(now);
     arpg_hold_tick(now);
     arpg_player_tick(now);
     arpg_hud_tick(now);
+
+    if ((obj_dude->data.critter.combat.results & DAM_KNOCKED_OUT) != 0
+        && (obj_dude->data.critter.combat.results & DAM_DEAD) == 0) {
+        obj_dude->data.critter.combat.results &= ~DAM_KNOCKED_OUT;
+        obj_dude->data.critter.combat.results |= DAM_KNOCKED_DOWN;
+        queue_remove_this(obj_dude, EVENT_TYPE_KNOCKOUT);
+        arpg_log("ARPG: player knockout downgraded to knockdown\n");
+    }
 
     bool alert = now < alert_until;
     bool joinCheck = alert && now >= next_join_check;

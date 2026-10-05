@@ -489,6 +489,10 @@ int game_handle_input(int eventCode, bool isInCombatMode)
         return 0;
     }
 
+    if (arpg_handle_key(eventCode)) {
+        return 0;
+    }
+
     switch (eventCode) {
     case -20:
         if (intface_is_enabled()) {

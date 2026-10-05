@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <math.h>
+
 #include <algorithm>
 #include <unordered_map>
 #include <vector>
@@ -34,6 +36,7 @@
 #include "game/stat.h"
 #include "game/textobj.h"
 #include "game/tile.h"
+#include "platform_compat.h"
 #include "plib/color/color.h"
 #include "plib/gnw/debug.h"
 #include "plib/gnw/input.h"
@@ -88,6 +91,22 @@ static int energy_regen_pct = 100;
 static double energy = -1.0;
 static unsigned int last_energy_tick = 0;
 static bool player_special = false;
+// Aimed shot from the skill bar (Q/E/T): hit location, or -1.
+static int player_aim_location = -1;
+static bool player_in_place = false;
+static unsigned int next_range_warning = 0;
+
+// Control scheme.
+static int controls = ARPG_CONTROLS_POE;
+static int dodge_cost = 20;
+static unsigned int dodge_until = 0;
+static int wasd_dx = 0;
+static int wasd_dy = 0;
+static int wasd_target_tile = -1;
+static unsigned int wasd_next_move = 0;
+static bool wasd_moving = false;
+static int autotest_wasd = -1;
+static bool dump_items = false;
 
 static unsigned int next_hold_action = 0;
 static int hold_last_tile = -1;
@@ -157,6 +176,9 @@ static Object* player_unreachable = NULL;
 static unsigned int player_unreachable_until = 0;
 
 static void arpg_drop_loot(Object* victim);
+static void arpg_wasd_tick(unsigned int now);
+static void arpg_dodge();
+static void arpg_player_aimed(Object* target, int hitLocation);
 
 // display_print() modifies its argument, so never pass it a literal.
 static void arpg_print(const char* text)
@@ -268,14 +290,30 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "loot_drops", &loot_drops);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "loot_pct", &loot_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "energy_regen_pct", &energy_regen_pct);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "dodge_cost", &dodge_cost);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "dump_items", &dump_items);
+    // Autotest: hold a WASD direction (0=W 1=D 2=S 3=A) through the real
+    // movement path.
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_wasd", &autotest_wasd);
+
+    char* scheme;
+    if (config_get_string(&game_config, ARPG_CONFIG_SECTION, "controls", &scheme)) {
+        if (compat_stricmp(scheme, "classic") == 0) {
+            controls = ARPG_CONTROLS_CLASSIC;
+        } else if (compat_stricmp(scheme, "wasd") == 0) {
+            controls = ARPG_CONTROLS_WASD;
+        } else {
+            controls = ARPG_CONTROLS_POE;
+        }
+    }
 
     // Command-line test switches are merged into game_config, which CE saves
     // back to fallout.cfg on exit. Neutralize them so they don't stick.
-    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp" };
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd" };
     for (const char* key : testKeys) {
         char* value;
         if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
-            config_set_value(&game_config, ARPG_CONFIG_SECTION, key, strcmp(key, "autotest_weapon") == 0 || strcmp(key, "autotest_ammo") == 0 ? -1 : 0);
+            config_set_value(&game_config, ARPG_CONFIG_SECTION, key, strcmp(key, "autotest_weapon") == 0 || strcmp(key, "autotest_ammo") == 0 || strcmp(key, "autotest_wasd") == 0 ? -1 : 0);
         }
     }
 
@@ -315,7 +353,14 @@ void arpg_reset()
     player_target = NULL;
     player_chasing = false;
     player_special = false;
+    player_aim_location = -1;
+    player_in_place = false;
     player_unreachable = NULL;
+    wasd_moving = false;
+    wasd_target_tile = -1;
+    wasd_dx = 0;
+    wasd_dy = 0;
+    dodge_until = 0;
     alert_until = 0;
     next_list_refresh = 0;
     last_energy_tick = 0;
@@ -680,6 +725,16 @@ static void arpg_resolve(ArpgAttack* aa)
 
     bool hit = (attack->attackerFlags & DAM_HIT) != 0;
 
+    if (hit && defender == obj_dude && get_time() < dodge_until) {
+        // Dodge roll i-frames: the blow lands on empty air.
+        attack->attackerFlags &= ~(DAM_HIT | DAM_CRITICAL);
+        attack->defenderFlags = 0;
+        attack->defenderDamage = 0;
+        attack->defenderKnockback = 0;
+        hit = false;
+        arpg_log("ARPG: dodged %s\n", critter_name(attacker));
+    }
+
     if (hit) {
         const char* sfx;
         if (aa->anim == ANIM_THROW_PUNCH || aa->anim == ANIM_KICK_LEG) {
@@ -854,7 +909,7 @@ static void arpg_energy_tick(unsigned int now)
     }
 }
 
-void arpg_player_attack(Object* target)
+void arpg_player_attack(Object* target, bool inPlace)
 {
     if (target == NULL || target == obj_dude) {
         return;
@@ -864,10 +919,12 @@ void arpg_player_attack(Object* target)
     player_chasing = false;
     player_next_repath = 0;
     player_special = false;
+    player_aim_location = -1;
+    player_in_place = inPlace;
     player_chase_failures = 0;
 }
 
-void arpg_player_special(Object* target)
+void arpg_player_special(Object* target, bool inPlace)
 {
     if (target == NULL || target == obj_dude) {
         return;
@@ -877,7 +934,15 @@ void arpg_player_special(Object* target)
     player_chasing = false;
     player_next_repath = 0;
     player_special = true;
+    player_aim_location = -1;
+    player_in_place = inPlace;
     player_chase_failures = 0;
+}
+
+static void arpg_player_aimed(Object* target, int hitLocation)
+{
+    arpg_player_special(target, arpg_attack_in_place());
+    player_aim_location = hitLocation;
 }
 
 void arpg_player_clear_target()
@@ -977,6 +1042,17 @@ static void arpg_player_tick(unsigned int now)
     }
 
     if (rc == COMBAT_BAD_SHOT_OUT_OF_RANGE || rc == COMBAT_BAD_SHOT_AIM_BLOCKED) {
+        if (player_in_place) {
+            // Attack in place (Shift / WASD scheme): never walk to the target.
+            if (now >= next_range_warning) {
+                next_range_warning = now + 1500;
+                arpg_float_text(obj_dude, rc == COMBAT_BAD_SHOT_AIM_BLOCKED ? "Blocked" : "Out of range", colorTable[21140]);
+            }
+            player_target = NULL;
+            player_special = false;
+            return;
+        }
+
         if (now < player_next_repath) {
             return;
         }
@@ -1000,7 +1076,7 @@ static void arpg_player_tick(unsigned int now)
             player_chase_failures++;
             player_next_repath = now + 300;
             if (player_chase_failures >= 3) {
-                arpg_log("ARPG: can't reach %s (rc=%d dist=%d)\n", critter_name(player_target), rc, obj_dist(obj_dude, player_target));
+                arpg_log("ARPG: can't reach %s (rc=%d dist=%d dude=%d target=%d path=%d busy=%d)\n", critter_name(player_target), rc, obj_dist(obj_dude, player_target), obj_dude->tile, player_target->tile, make_path(obj_dude, obj_dude->tile, player_target->tile, NULL, 0), anim_busy(obj_dude));
                 player_unreachable = player_target;
                 player_unreachable_until = now + 8000;
                 player_target = NULL;
@@ -1012,6 +1088,11 @@ static void arpg_player_tick(unsigned int now)
 
     // In range.
     if (now < player_next_attack) {
+        return;
+    }
+
+    // WASD movement wins over attacking; Fallout can't fire while running.
+    if (wasd_moving) {
         return;
     }
 
@@ -1030,7 +1111,16 @@ static void arpg_player_tick(unsigned int now)
 
         int specialMode = hitMode;
         bool aimed = true;
-        if (hitMode == HIT_MODE_LEFT_WEAPON_PRIMARY || hitMode == HIT_MODE_RIGHT_WEAPON_PRIMARY) {
+        int aimLocation = player_aim_location;
+        player_aim_location = -1;
+        if (aimLocation != -1) {
+            // Skill bar aimed shot at a chosen body part.
+            if (!item_w_called_shot(obj_dude, hitMode)) {
+                arpg_float_text(obj_dude, "Can't aim", colorTable[21140]);
+                aimLocation = HIT_LOCATION_TORSO;
+                aimed = false;
+            }
+        } else if (hitMode == HIT_MODE_LEFT_WEAPON_PRIMARY || hitMode == HIT_MODE_RIGHT_WEAPON_PRIMARY) {
             int secondary = hitMode + 1;
             int secondaryAnim = item_w_anim(obj_dude, secondary);
             if (secondaryAnim == ANIM_FIRE_BURST || secondaryAnim == ANIM_FIRE_CONTINUOUS) {
@@ -1040,15 +1130,28 @@ static void arpg_player_tick(unsigned int now)
         }
 
         int cost = item_w_mp_cost(obj_dude, specialMode, aimed) * 10;
-        if (arpg_energy() < cost) {
+        if (aimLocation != -1 && !aimed) {
+            cost = 0;
+        } else if (arpg_energy() < cost) {
             arpg_float_text(obj_dude, "Need energy", colorTable[992]);
             gsound_play_sfx_file("iisxxxx1");
         } else {
             energy -= cost;
             hitMode = specialMode;
             if (aimed) {
-                hitLocation = HIT_LOCATION_HEAD;
-                arpg_float_text(obj_dude, "Aimed shot!", colorTable[992]);
+                hitLocation = aimLocation != -1 ? aimLocation : HIT_LOCATION_HEAD;
+                switch (hitLocation) {
+                case HIT_LOCATION_EYES:
+                    arpg_float_text(obj_dude, "Eyes!", colorTable[992]);
+                    break;
+                case HIT_LOCATION_LEFT_LEG:
+                case HIT_LOCATION_RIGHT_LEG:
+                    arpg_float_text(obj_dude, "Legs!", colorTable[992]);
+                    break;
+                default:
+                    arpg_float_text(obj_dude, "Aimed shot!", colorTable[992]);
+                    break;
+                }
             } else {
                 arpg_float_text(obj_dude, "Burst!", colorTable[992]);
             }
@@ -1219,15 +1322,16 @@ static void arpg_hold_tick(unsigned int now)
     }
     next_hold_action = now + 300;
 
-    Object* critter = object_under_mouse(OBJ_TYPE_CRITTER, false, map_elevation);
+    bool inPlace = arpg_attack_in_place();
+    Object* critter = inPlace ? arpg_target_near_cursor() : object_under_mouse(OBJ_TYPE_CRITTER, false, map_elevation);
     if (critter != NULL && arpg_is_attackable(critter)) {
-        if (player_target != critter) {
-            arpg_player_attack(critter);
+        if (player_target != critter || player_in_place != inPlace) {
+            arpg_player_attack(critter, inPlace);
         }
         return;
     }
 
-    if (player_target != NULL) {
+    if (player_target != NULL || inPlace) {
         return;
     }
 
@@ -1412,9 +1516,7 @@ void arpg_tick()
 
     if (arpg_test) {
         if (autotest_start == 0) {
-            bool dumpItems = false;
-            configGetBool(&game_config, ARPG_CONFIG_SECTION, "dump_items", &dumpItems);
-            if (dumpItems) {
+            if (dump_items) {
                 for (int pid = 1; pid < 600; pid++) {
                     Proto* proto;
                     if (proto_ptr(pid, &proto) != -1) {
@@ -1530,6 +1632,14 @@ void arpg_tick()
             arpg_log("ARPG autoplay: quick heal %d -> %d\n", before, critter_get_hits(obj_dude));
         }
 
+        // Test bot dodges (Space) when it gets hurt.
+        static unsigned int nextDodge = 0;
+        if (controls != ARPG_CONTROLS_CLASSIC && now >= nextDodge && player_target != NULL
+            && critter_get_hits(obj_dude) * 100 < stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS) * 80) {
+            nextDodge = now + 5000;
+            arpg_dodge();
+        }
+
         // Test bot: warp next to the nearest critter whenever idle, and
         // attack any monster within leash range.
         if (!autoplay_warped) {
@@ -1550,6 +1660,20 @@ void arpg_tick()
             autoplay_idle_since = 0;
         }
 
+        // Test bot: stuck chasing something behind a wall without landing an
+        // attack for a while; go somewhere else.
+        static int lastAttacks = 0;
+        static unsigned int lastAttackTime = 0;
+        if (stat_attacks != lastAttacks || lastAttackTime == 0) {
+            lastAttacks = stat_attacks;
+            lastAttackTime = now;
+        } else if (autoplay_warped && now - lastAttackTime > 10000) {
+            lastAttackTime = now;
+            arpg_log("ARPG autoplay: stalled, warping\n");
+            arpg_player_clear_target();
+            arpg_debug_warp_to_enemy();
+        }
+
         if (player_target == NULL) {
             Object* best = NULL;
             for (int index = 0; index < crit_count; index++) {
@@ -1561,7 +1685,13 @@ void arpg_tick()
                     }
                 }
             }
-            if (best != NULL && arpg_energy() >= arpg_energy_max()) {
+            if (best != NULL && arpg_energy() >= arpg_energy_max() && controls != ARPG_CONTROLS_CLASSIC) {
+                // Exercise the skill bar aimed shots (Q/E/T).
+                static int nextAim = 0;
+                static const int aims[] = { HIT_LOCATION_HEAD, HIT_LOCATION_LEFT_LEG, HIT_LOCATION_EYES };
+                arpg_log("ARPG autoplay: aimed shot loc=%d at %s\n", aims[nextAim % 3], critter_name(best));
+                arpg_player_aimed(best, aims[nextAim++ % 3]);
+            } else if (best != NULL && arpg_energy() >= arpg_energy_max()) {
                 arpg_player_special(best);
             } else if (best != NULL) {
                 arpg_log("ARPG autoplay: targeting %s\n", critter_name(best));
@@ -1587,6 +1717,7 @@ void arpg_tick()
     }
 
     arpg_energy_tick(now);
+    arpg_wasd_tick(now);
     arpg_hold_tick(now);
     arpg_player_tick(now);
     arpg_hud_tick(now);
@@ -1649,34 +1780,513 @@ bool arpg_is_engaged(Object* critter)
     return it != actors.end() && it->second.target != NULL;
 }
 
+// ---------------------------------------------------------------------------
+// Control schemes (Path of Exile style)
+// ---------------------------------------------------------------------------
+
+int arpg_controls()
+{
+    return controls;
+}
+
+bool arpg_attack_in_place()
+{
+    if (!arpg_on) {
+        return false;
+    }
+
+    if (controls == ARPG_CONTROLS_WASD) {
+        return true;
+    }
+
+    return controls == ARPG_CONTROLS_POE && (keys[SDL_SCANCODE_LSHIFT] != 0 || keys[SDL_SCANCODE_RSHIFT] != 0);
+}
+
+// The critter under the cursor, or failing that the closest attackable one
+// within two hexes of the cursor, so skill keys don't need pixel-exact aim.
+Object* arpg_target_near_cursor()
+{
+    Object* critter = object_under_mouse(OBJ_TYPE_CRITTER, false, map_elevation);
+    if (critter != NULL && arpg_is_attackable(critter)) {
+        return critter;
+    }
+
+    int mouseX;
+    int mouseY;
+    mouse_get_position(&mouseX, &mouseY);
+    int tile = tile_num(mouseX, mouseY, map_elevation);
+    if (tile == -1) {
+        return NULL;
+    }
+
+    Object* best = NULL;
+    int bestDist = 3;
+    for (int index = 0; index < crit_count; index++) {
+        Object* candidate = crit_list[index];
+        if (candidate->elevation != map_elevation || !arpg_is_attackable(candidate)) {
+            continue;
+        }
+
+        int dist = tile_dist(tile, candidate->tile);
+        if (dist < bestDist) {
+            best = candidate;
+            bestDist = dist;
+        }
+    }
+    return best;
+}
+
+// Uses the first carried drug from `pids` (a PoE "flask"). Returns true if
+// one was taken.
+static bool arpg_use_drug(const int* pids, int count, const char* floatText)
+{
+    for (int index = 0; index < count; index++) {
+        Object* item = inven_pid_is_carried_ptr(obj_dude, pids[index]);
+        if (item == NULL) {
+            continue;
+        }
+
+        // Same sequence the combat AI uses for stimpaks.
+        if (item_remove_mult(obj_dude, item, 1) == 0) {
+            if (item_d_take_drug(obj_dude, item) == -1) {
+                item_add_force(obj_dude, item, 1);
+            } else {
+                obj_connect(item, obj_dude->tile, obj_dude->elevation, NULL);
+                obj_destroy(item);
+                arpg_float_text(obj_dude, floatText, colorTable[992]);
+            }
+        }
+        intface_update_hit_points(true);
+        intface_update_items(false);
+        gsound_play_sfx_file("ib1p1xx1");
+        return true;
+    }
+    return false;
+}
+
+static const int flask_heal[] = { PROTO_ID_SUPER_STIMPACK, PROTO_ID_STIMPACK };
+static const int flask_rad[] = { PROTO_ID_RADAWAY, 109 /* Rad-X */ };
+static const int flask_str[] = { PROTO_ID_BUFF_OUT };
+static const int flask_int[] = { PROTO_ID_MENTATS };
+static const int flask_rage[] = { PROTO_ID_PSYCHO, PROTO_ID_NUKA_COLA };
+
+#define FLASK(pids, text, missing)                                         \
+    if (!arpg_use_drug(pids, sizeof(pids) / sizeof(*pids), text)) {      \
+        arpg_print(missing);                                               \
+    }
+
+static void arpg_use_flask(int slot)
+{
+    switch (slot) {
+    case 1:
+        arpg_quick_heal();
+        break;
+    case 2:
+        FLASK(flask_rad, "+rad", "No RadAway or Rad-X.");
+        break;
+    case 3:
+        FLASK(flask_str, "+Buffout", "No Buffout.");
+        break;
+    case 4:
+        FLASK(flask_int, "+Mentats", "No Mentats.");
+        break;
+    case 5:
+        FLASK(flask_rage, "+Psycho", "No Psycho or Nuka-Cola.");
+        break;
+    }
+}
+
+#undef FLASK
+
+// A tile roughly `hexes` hexes from the player in screen direction (dx, dy).
+// Fallout's hexes have no straight "up", so this aims at a screen point and
+// lets the pathfinder zig-zag there.
+static int arpg_tile_toward(double dx, double dy, int hexes)
+{
+    int x;
+    int y;
+    if (tile_coord(obj_dude->tile, &x, &y, obj_dude->elevation) == -1) {
+        return -1;
+    }
+
+    double len = sqrt(dx * dx + dy * dy);
+    if (len <= 0.0) {
+        return -1;
+    }
+
+    // Isometric 2:1 units: 32 px across, 16 px down per step.
+    int tx = x + 16 + (int)(dx / len * 32.0 * hexes);
+    int ty = y + 8 + (int)(dy / len * 16.0 * hexes);
+    return tile_num(tx, ty, obj_dude->elevation, true);
+}
+
+// Finds a reachable tile in screen direction (dx, dy), up to `maxHexes`
+// away. Falls back to directions angled up to 90 degrees off so the player
+// slides along walls instead of stopping dead, and rejects targets the
+// pathfinder could only reach by a long detour.
+static int arpg_step_target(double dx, double dy, int maxHexes, int minHexes)
+{
+    int x;
+    int y;
+    if (tile_coord(obj_dude->tile, &x, &y, obj_dude->elevation) == -1) {
+        return -1;
+    }
+
+    double len = sqrt(dx * dx + dy * dy);
+    if (len <= 0.0) {
+        return -1;
+    }
+
+    // Try the side we slid to last time first, so a wall corner doesn't make
+    // the player flip back and forth.
+    static int slideSide = 1;
+    double angles[] = { 0.0, 0.7854 * slideSide, -0.7854 * slideSide, 1.3963 * slideSide, -1.3963 * slideSide };
+    for (int index = 0; index < 5; index++) {
+        double angle = angles[index];
+        double rx = dx * cos(angle) - dy * sin(angle);
+        double ry = dx * sin(angle) + dy * cos(angle);
+        int strideMax = index == 0 ? maxHexes : std::min(maxHexes, 3);
+        for (int hexes = strideMax; hexes >= minHexes; hexes--) {
+            int tile = arpg_tile_toward(rx, ry, hexes);
+            if (tile == -1 || tile == obj_dude->tile) {
+                continue;
+            }
+            if (obj_blocking_at(obj_dude, tile, obj_dude->elevation) != NULL) {
+                continue;
+            }
+
+            // Must make headway in the wanted direction (hex rounding can
+            // otherwise pick a tile slightly behind the player).
+            int tx;
+            int ty;
+            tile_coord(tile, &tx, &ty, obj_dude->elevation);
+            double forward = ((tx - x) / 32.0 * dx + (ty - y) / 16.0 * dy) / len;
+            if (forward < 0.25) {
+                continue;
+            }
+
+            int dist = tile_dist(obj_dude->tile, tile);
+            int pathLength = make_path(obj_dude, obj_dude->tile, tile, NULL, 1);
+            if (pathLength <= 0 || pathLength > dist + 2) {
+                continue;
+            }
+
+            if (index != 0) {
+                slideSide = angle > 0 ? 1 : -1;
+            }
+            return tile;
+        }
+    }
+    return -1;
+}
+
+static bool arpg_run_to(int tile)
+{
+    if (tile == -1 || tile == obj_dude->tile) {
+        return false;
+    }
+
+    if (register_clear(obj_dude) == -2) {
+        // Mid-attack; attack sequences are prioritized.
+        return false;
+    }
+
+    register_begin(ANIMATION_REQUEST_RESERVED);
+    if (register_object_run_to_tile(obj_dude, tile, obj_dude->elevation, -1, 0) != 0) {
+        register_end();
+        return false;
+    }
+    register_end();
+    return anim_busy(obj_dude) != 0;
+}
+
+static bool arpg_input_ready()
+{
+    return intface_is_enabled() && !intface_is_hidden()
+        && gmouse_3d_get_mode() == GAME_MOUSE_MODE_MOVE
+        && (obj_dude->data.critter.combat.results & (DAM_KNOCKED_DOWN | DAM_KNOCKED_OUT | DAM_DEAD)) == 0;
+}
+
+static void arpg_wasd_dir(int* dx, int* dy)
+{
+    *dx = 0;
+    *dy = 0;
+    if (controls != ARPG_CONTROLS_WASD) {
+        return;
+    }
+
+    if (keys[SDL_SCANCODE_W]) {
+        *dy -= 1;
+    }
+    if (keys[SDL_SCANCODE_S]) {
+        *dy += 1;
+    }
+    if (keys[SDL_SCANCODE_A]) {
+        *dx -= 1;
+    }
+    if (keys[SDL_SCANCODE_D]) {
+        *dx += 1;
+    }
+
+    if (arpg_test && autotest_wasd >= 0 && autotest_wasd <= 3 && autotest_start != 0) {
+        static const int dirs[4][2] = { { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 } };
+        // Hold the test direction for 3 s, then let go for 1 s.
+        if ((get_time() - autotest_start) % 4000 < 3000) {
+            *dx = dirs[autotest_wasd][0];
+            *dy = dirs[autotest_wasd][1];
+        }
+    }
+}
+
+// Keeps the player near the middle of the view while WASD-running, since the
+// cursor no longer drags the view along.
+static void arpg_camera_follow()
+{
+    int x;
+    int y;
+    if (tile_coord(obj_dude->tile, &x, &y, obj_dude->elevation) == -1) {
+        return;
+    }
+
+    int width = scr_size.lrx - scr_size.ulx + 1;
+    int height = scr_size.lry - scr_size.uly + 1 - 100;
+    int offX = x + 16 - width / 2;
+    int offY = y + 8 - height / 2;
+
+    int dx = 0;
+    int dy = 0;
+    if (offX > width / 6) {
+        dx = 1;
+    } else if (offX < -width / 6) {
+        dx = -1;
+    }
+    if (offY > height / 6) {
+        dy = 1;
+    } else if (offY < -height / 6) {
+        dy = -1;
+    }
+
+    if (dx != 0 || dy != 0) {
+        map_scroll(dx, dy);
+    }
+}
+
+static void arpg_wasd_tick(unsigned int now)
+{
+    if (controls != ARPG_CONTROLS_WASD) {
+        wasd_moving = false;
+        return;
+    }
+
+    arpg_camera_follow();
+
+    int dx;
+    int dy;
+    arpg_wasd_dir(&dx, &dy);
+
+    if ((dx == 0 && dy == 0) || !arpg_input_ready()) {
+        if (wasd_moving) {
+            // Released: stop now instead of finishing the path. A prioritized
+            // attack sequence is left alone by register_clear.
+            wasd_moving = false;
+            wasd_target_tile = -1;
+            register_clear(obj_dude);
+        }
+        wasd_dx = 0;
+        wasd_dy = 0;
+        return;
+    }
+
+    if (!wasd_moving) {
+        // Moving cancels a pending click attack.
+        player_target = NULL;
+        player_chasing = false;
+    }
+    wasd_moving = true;
+
+    bool turned = dx != wasd_dx || dy != wasd_dy;
+    bool idle = !anim_busy(obj_dude);
+    bool nearEnd = wasd_target_tile != -1 && tile_dist(obj_dude->tile, wasd_target_tile) <= 2;
+
+    if (!turned && !idle && !nearEnd) {
+        return;
+    }
+
+    if (now < wasd_next_move && !turned) {
+        return;
+    }
+    wasd_next_move = now + 150;
+
+    wasd_dx = dx;
+    wasd_dy = dy;
+
+    // Aim several hexes ahead so the run doesn't stop at every step.
+    int tile = arpg_step_target(dx, dy, 6, 1);
+    if (tile != -1 && arpg_run_to(tile)) {
+        if (arpg_test) {
+            arpg_log("ARPG: wasd (%d,%d) %d -> %d\n", dx, dy, obj_dude->tile, tile);
+        }
+        wasd_target_tile = tile;
+    }
+}
+
+// PoE2 dodge roll (Space): a short dash toward the cursor (or the WASD
+// direction) with a moment of invulnerability. Costs energy.
+static void arpg_dodge()
+{
+    if (!arpg_input_ready()) {
+        return;
+    }
+
+    unsigned int now = get_time();
+    if (now < dodge_until + 300) {
+        return;
+    }
+
+    if (arpg_energy() < dodge_cost) {
+        arpg_float_text(obj_dude, "Need energy", colorTable[992]);
+        gsound_play_sfx_file("iisxxxx1");
+        return;
+    }
+
+    int dx;
+    int dy;
+    arpg_wasd_dir(&dx, &dy);
+
+    double vx = dx;
+    double vy = dy;
+    if (dx == 0 && dy == 0) {
+        int x;
+        int y;
+        int mouseX;
+        int mouseY;
+        mouse_get_position(&mouseX, &mouseY);
+        if (tile_coord(obj_dude->tile, &x, &y, obj_dude->elevation) == -1) {
+            return;
+        }
+        // Screen pixels to isometric 2:1 units.
+        vx = (mouseX - (x + 16)) / 32.0;
+        vy = (mouseY - (y + 8)) / 16.0;
+    }
+
+    int tile = arpg_step_target(vx, vy, 3, 1);
+    if (tile != -1 && arpg_run_to(tile)) {
+        energy -= dodge_cost;
+        dodge_until = now + 600;
+        player_target = NULL;
+        player_chasing = false;
+        wasd_target_tile = -1;
+        arpg_float_text(obj_dude, "Dodge", colorTable[992]);
+        arpg_log("ARPG: dodge to %d energy=%d\n", tile, arpg_energy());
+    }
+}
+
+static void arpg_skill_shot(int hitLocation)
+{
+    if (!arpg_input_ready()) {
+        return;
+    }
+
+    Object* target = arpg_target_near_cursor();
+    if (target == NULL) {
+        arpg_float_text(obj_dude, "No target", colorTable[21140]);
+        return;
+    }
+
+    arpg_player_aimed(target, hitLocation);
+}
+
+static void arpg_cycle_controls()
+{
+    static const char* names[] = { "classic", "poe", "wasd" };
+    static const char* descriptions[] = {
+        "Controls: classic (Q heal, R reload, Shift walks).",
+        "Controls: Path of Exile (1-5 flasks, Q/E/T aimed shots, Shift: attack in place, Space: dodge).",
+        "Controls: WASD (W/A/S/D move, mouse aims, attacks in place).",
+    };
+
+    controls = (controls + 1) % 3;
+    if (controls != ARPG_CONTROLS_WASD && wasd_moving) {
+        wasd_moving = false;
+        register_clear(obj_dude);
+    }
+    config_set_string(&game_config, ARPG_CONFIG_SECTION, "controls", names[controls]);
+
+    // display_print() writes into its argument.
+    char text[160];
+    snprintf(text, sizeof(text), "%s", descriptions[controls]);
+    display_print(text);
+    gsound_play_sfx_file("ib1p1xx1");
+}
+
+bool arpg_handle_key(int key)
+{
+    if (!arpg_on || !intface_is_enabled()) {
+        return false;
+    }
+
+    if (key == KEY_CTRL_W) {
+        arpg_cycle_controls();
+        return true;
+    }
+
+    if (controls == ARPG_CONTROLS_CLASSIC) {
+        return false;
+    }
+
+    switch (key) {
+    case KEY_LOWERCASE_W:
+    case KEY_UPPERCASE_W:
+    case KEY_LOWERCASE_A:
+    case KEY_UPPERCASE_A:
+    case KEY_LOWERCASE_S:
+    case KEY_UPPERCASE_S:
+    case KEY_LOWERCASE_D:
+    case KEY_UPPERCASE_D:
+        // Held keys are polled in arpg_wasd_tick; swallow the key events so
+        // A doesn't start combat and S doesn't open the skilldex.
+        return controls == ARPG_CONTROLS_WASD;
+    case KEY_1:
+    case KEY_2:
+    case KEY_3:
+    case KEY_4:
+    case KEY_5:
+        arpg_use_flask(key - KEY_1 + 1);
+        return true;
+    case KEY_LOWERCASE_Q:
+    case KEY_UPPERCASE_Q:
+        arpg_skill_shot(HIT_LOCATION_HEAD);
+        return true;
+    case KEY_LOWERCASE_E:
+    case KEY_UPPERCASE_E:
+        arpg_skill_shot(roll_random(0, 1) ? HIT_LOCATION_LEFT_LEG : HIT_LOCATION_RIGHT_LEG);
+        return true;
+    case KEY_LOWERCASE_T:
+    case KEY_UPPERCASE_T:
+        arpg_skill_shot(HIT_LOCATION_EYES);
+        return true;
+    case KEY_LOWERCASE_Z:
+    case KEY_UPPERCASE_Z:
+        labels_always = !labels_always;
+        gsound_play_sfx_file("ib1p1xx1");
+        return true;
+    case KEY_SPACE:
+        arpg_dodge();
+        return true;
+    }
+
+    return false;
+}
+
 void arpg_quick_heal()
 {
     if (!arpg_on) {
         return;
     }
 
-    static const int pids[] = { PROTO_ID_SUPER_STIMPACK, PROTO_ID_STIMPACK };
-    for (int pid : pids) {
-        Object* item = inven_pid_is_carried_ptr(obj_dude, pid);
-        if (item != NULL) {
-            // Same sequence the combat AI uses for stimpaks.
-            if (item_remove_mult(obj_dude, item, 1) == 0) {
-                if (item_d_take_drug(obj_dude, item) == -1) {
-                    item_add_force(obj_dude, item, 1);
-                } else {
-                    obj_connect(item, obj_dude->tile, obj_dude->elevation, NULL);
-                    obj_destroy(item);
-                    arpg_float_text(obj_dude, "+heal", colorTable[992]);
-                }
-            }
-            intface_update_hit_points(true);
-            intface_update_items(false);
-            gsound_play_sfx_file("ib1p1xx1");
-            return;
-        }
+    if (!arpg_use_drug(flask_heal, sizeof(flask_heal) / sizeof(*flask_heal), "+heal")) {
+        arpg_print("No stimpaks.");
     }
-
-    arpg_print("No stimpaks.");
 }
 
 void arpg_quick_reload()
@@ -1716,6 +2326,10 @@ void arpg_debug_warp_to_enemy()
     for (int index = 0; index < crit_count; index++) {
         Object* critter = crit_list[index];
         if (critter == obj_dude || !arpg_alive(critter) || isPartyMember(critter)) {
+            continue;
+        }
+
+        if (critter == player_unreachable && get_time() < player_unreachable_until) {
             continue;
         }
 

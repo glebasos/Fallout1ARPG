@@ -23,10 +23,31 @@ void arpg_tick();
 // Replacement for entering turn-based combat (`combat()`).
 void arpg_request_combat(STRUCT_664980* attack);
 
+// Control schemes (`[arpg] controls=classic|poe|wasd`, Ctrl+W cycles).
+//   classic: Diablo-ish first version (Q heal, R reload, Shift walks).
+//   poe:     Path of Exile click-to-move: 1-5 flasks, Q/E/T aimed shots,
+//            Shift attacks in place, Z toggles loot labels, Space dodges.
+//   wasd:    poe + PoE2 WASD movement; the mouse only aims, attacks never move.
+enum {
+    ARPG_CONTROLS_CLASSIC,
+    ARPG_CONTROLS_POE,
+    ARPG_CONTROLS_WASD,
+};
+
+int arpg_controls();
+
+// True when a left click must not move the player (WASD scheme, or Shift
+// held in the poe scheme).
+bool arpg_attack_in_place();
+
+// Returns true if the key was consumed by the ARPG control scheme.
+bool arpg_handle_key(int key);
+
 // Player intent.
-void arpg_player_attack(Object* target);
+void arpg_player_attack(Object* target, bool inPlace = false);
 void arpg_player_clear_target();
-void arpg_player_special(Object* target);
+void arpg_player_special(Object* target, bool inPlace = false);
+Object* arpg_target_near_cursor();
 int arpg_energy();
 int arpg_energy_max();
 

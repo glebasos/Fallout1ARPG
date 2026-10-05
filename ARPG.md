@@ -10,16 +10,40 @@ no game files are included.
    Set `[arpg] enabled=0` in `fallout.cfg` to get vanilla turn-based CE behaviour.
 
 ## How it plays
+Three control schemes. Set `[arpg] controls=poe|wasd|classic` (default `poe`), or press **Ctrl+W** in
+game to cycle them.
+
+### `poe`: Path of Exile click-to-move (default)
 | Input | Action |
 |---|---|
 | Left-click a monster / hostile | Attack (auto-runs into range, keeps attacking until it dies) |
 | Left-click ground / hold left button | Run / keep running toward the cursor |
+| **Shift** + left-click / hold | Attack in place: never walks; snaps to the enemy nearest the cursor |
 | Left-click an item on the ground | Pick it up |
-| Right-click an enemy | Special attack: burst fire if the weapon has it, else aimed head shot (costs Energy) |
-| Alt (hold) | Show item labels: white = normal, blue = value ≥1000, gold = value ≥3000 |
-| Q | Drink a (super) stimpak |
+| Right-click an enemy | Special: burst fire if the weapon has it, else aimed head shot (costs Energy) |
+| **Q / E / T** | Skill bar: aimed shot at the head / legs / eyes of the enemy near the cursor (costs Energy) |
 | R | Reload |
+| **1–5** | Flasks: 1 (super) stimpak, 2 RadAway / Rad-X, 3 Buffout, 4 Mentats, 5 Psycho / Nuka-Cola |
+| **Space** | Dodge roll toward the cursor, with 0.6 s of invulnerability (20 Energy) |
+| **Z** | Toggle loot labels on/off (Alt still shows them while held) |
+| Tab | Automap |
 | Crosshair mode (right-click empty ground) | Attack anyone, including neutrals |
+
+The flasks replace Fallout's skill hotkeys 1–5 (sneak, lockpick, steal, traps, first aid). Use the
+Skilldex (S or the interface button) for those; 6–8 still work. Z no longer opens the Pip-Boy clock;
+P still opens the Pip-Boy.
+
+### `wasd`: PoE2-style movement
+Everything above, except:
+- **W/A/S/D** run in that screen direction, with diagonals. The view follows you. The character slides
+  along walls instead of stopping.
+- The mouse only aims. Left-click attacks the enemy near the cursor *in place*; clicking the ground does
+  nothing (items are still picked up). Space dodges in the WASD direction if one is held.
+- A and S no longer start combat or open the Skilldex (use the interface buttons).
+- Fallout can't fire while walking, so attacks wait until you stop moving. You can't strafe-shoot.
+
+### `classic`: first version
+Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock; no Q/E/T, flasks or dodge.
 
 - Real-time AI: enemies chase and attack using Fallout's own targeting (`ai_danger_source`), teammates join, scripts still trigger fights.
 - Attack speed = weapon AP cost ÷ max AP (Agility matters). Fallout's to-hit, crits, armour and damage are unchanged.
@@ -28,7 +52,7 @@ no game files are included.
 - Kills drop caps, stimpaks, ammo for your weapon and gear scaled by the monster's XP. XP is awarded on kill.
 
 ## Config (`[arpg]` in fallout.cfg)
-`enabled`, `always_run`, `hold_to_move`, `damage_numbers`, `globes`, `loot_drops`, `loot_pct`,
+`enabled`, `controls` (poe/wasd/classic), `dodge_cost` (20), `always_run`, `hold_to_move`, `damage_numbers`, `globes`, `loot_drops`, `loot_pct`,
 `energy_regen_pct`, `enemy_attack_delay_pct` (130), `player_attack_delay_pct` (100), `stagger_pct`,
 `player_stagger_pct`, `stagger_immunity_ms`, `leash_distance`, `labels_always`.
 
@@ -38,6 +62,9 @@ fallout-arpg.exe [arpg]autotest=1 [arpg]autoplay=1 [arpg]autotest_seconds=90 [ar
                  [arpg]autotest_map=CAVES.MAP [arpg]autotest_weapon=23 [arpg]autotest_ammo=35
                  [arpg]autotest_armor=17 [arpg]autotest_xp=30000
 ```
+`[arpg]autotest_wasd=0..3` holds W/D/S/A (3 s on, 1 s off) through the real WASD movement path;
+`[arpg]dump_items=1` logs every item PID. Test keys are reset in fallout.cfg on exit, but other
+overrides like `controls` or `dodge_cost` are saved.
 Starts a new game with the combat premade, plays with a bot, writes `arpg.log`, screenshots, and a
 symbolized stack to `arpg_crash.log` on a crash. F11 warps next to the nearest critter in autotest.
 
@@ -48,9 +75,10 @@ cmake --build build
 ```
 
 ## Code map
-- `src/game/arpg.cc` – real-time combat, AI tick, energy/specials, loot, hold-to-move, autotest.
+- `src/game/arpg.cc` – real-time combat, AI tick, energy/specials, loot, hold-to-move, control schemes
+  (`arpg_handle_key`, WASD tick, dodge, flasks), autotest.
 - `src/game/arpg_hud.cc` – globes and Alt labels. `src/game/arpg_crash.cc` – autotest crash reporter.
-- Hooks: `combat()` / `combat_attack_this()` redirect, `main_game_loop` tick, `gmouse` click handling,
+- Hooks: `game_handle_input` → `arpg_handle_key` before Fallout's key switch, `combat()` / `combat_attack_this()` redirect, `main_game_loop` tick, `gmouse` click handling,
   `script_chk_critters` skips critter_p_proc for fighting critters, `obj_remove_all` resets state,
   `register_clear_force` in anim.cc.
 

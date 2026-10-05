@@ -149,6 +149,8 @@ static bool player_chasing = false;
 static unsigned int player_next_attack = 0;
 static unsigned int player_next_repath = 0;
 static int player_chase_failures = 0;
+static Object* player_unreachable = NULL;
+static unsigned int player_unreachable_until = 0;
 
 static void arpg_drop_loot(Object* victim);
 
@@ -309,6 +311,7 @@ void arpg_reset()
     player_target = NULL;
     player_chasing = false;
     player_special = false;
+    player_unreachable = NULL;
     alert_until = 0;
     next_list_refresh = 0;
     last_energy_tick = 0;
@@ -965,25 +968,34 @@ static void arpg_player_tick(unsigned int now)
     }
 
     if (rc == COMBAT_BAD_SHOT_OUT_OF_RANGE || rc == COMBAT_BAD_SHOT_AIM_BLOCKED) {
-        if (!player_chasing || !anim_busy(obj_dude) || now >= player_next_repath) {
-            if (player_chasing && anim_busy(obj_dude) && now < player_next_repath) {
-                return;
-            }
-            arpg_move_towards(obj_dude, player_target);
-            player_chasing = true;
-            player_next_repath = now + 1000;
+        if (now < player_next_repath) {
+            return;
+        }
 
+        // Moving: re-path once a second. Standing: retry a failed path
+        // after a short pause.
+        bool busy = anim_busy(obj_dude) != 0;
+        if (busy && player_chasing && now < player_next_repath + 1000) {
+            return;
+        }
+
+        arpg_move_towards(obj_dude, player_target);
+        player_chasing = true;
+
+        if (anim_busy(obj_dude)) {
+            player_chase_failures = 0;
+            player_next_repath = now + 1000;
+        } else {
             // No path (wall, closed door, other level section): give up
             // after a few tries instead of standing there forever.
-            if (!anim_busy(obj_dude)) {
-                player_chase_failures++;
-                if (player_chase_failures >= 3) {
-                    arpg_log("ARPG: can't reach %s\n", critter_name(player_target));
-                    player_target = NULL;
-                    player_chasing = false;
-                }
-            } else {
-                player_chase_failures = 0;
+            player_chase_failures++;
+            player_next_repath = now + 300;
+            if (player_chase_failures >= 3) {
+                arpg_log("ARPG: can't reach %s (rc=%d dist=%d)\n", critter_name(player_target), rc, obj_dist(obj_dude, player_target));
+                player_unreachable = player_target;
+                player_unreachable_until = now + 8000;
+                player_target = NULL;
+                player_chasing = false;
             }
         }
         return;
@@ -1461,9 +1473,21 @@ void arpg_tick()
                     inven_wield(obj_dude, armor, 0);
                 }
             }
+            Object* stims;
+            if (obj_pid_new(&stims, PROTO_ID_STIMPACK) == 0) {
+                if (item_add_force(obj_dude, stims, 5) == 0) {
+                    obj_disconnect(stims, NULL);
+                }
+            }
             if (autotest_xp > 0) {
                 stat_pc_add_experience(autotest_xp);
                 critter_adjust_hits(obj_dude, 999);
+            }
+            bool hurt = false;
+            configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_hurt", &hurt);
+            if (hurt) {
+                critter_adjust_hits(obj_dude, -(critter_get_hits(obj_dude) * 7 / 10));
+                config_set_value(&game_config, ARPG_CONFIG_SECTION, "autotest_hurt", 0);
             }
             intface_update_items(false);
             intface_update_ac(false);
@@ -1473,6 +1497,15 @@ void arpg_tick()
     }
 
     if (autoplay) {
+        // Test bot drinks a "potion" (Q) at low life.
+        static unsigned int nextHeal = 0;
+        if (now >= nextHeal && critter_get_hits(obj_dude) * 100 < stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS) * 40) {
+            nextHeal = now + 2000;
+            int before = critter_get_hits(obj_dude);
+            arpg_quick_heal();
+            arpg_log("ARPG autoplay: quick heal %d -> %d\n", before, critter_get_hits(obj_dude));
+        }
+
         // Test bot: warp next to the nearest critter whenever idle, and
         // attack any monster within leash range.
         if (!autoplay_warped) {
@@ -1497,7 +1530,8 @@ void arpg_tick()
             Object* best = NULL;
             for (int index = 0; index < crit_count; index++) {
                 Object* critter = crit_list[index];
-                if (arpg_is_attackable(critter) && obj_dist(critter, obj_dude) <= 12 && can_see(obj_dude, critter)) {
+                if (arpg_is_attackable(critter) && obj_dist(critter, obj_dude) <= 12 && can_see(obj_dude, critter)
+                    && !(critter == player_unreachable && now < player_unreachable_until)) {
                     if (best == NULL || obj_dist(critter, obj_dude) < obj_dist(best, obj_dude)) {
                         best = critter;
                     }
@@ -1577,10 +1611,18 @@ void arpg_quick_heal()
     for (int pid : pids) {
         Object* item = inven_pid_is_carried_ptr(obj_dude, pid);
         if (item != NULL) {
-            if (obj_use_item(obj_dude, item) == 1) {
-                // Item consumed; obj_use_item already removed it.
+            // Same sequence the combat AI uses for stimpaks.
+            if (item_remove_mult(obj_dude, item, 1) == 0) {
+                if (item_d_take_drug(obj_dude, item) == -1) {
+                    item_add_force(obj_dude, item, 1);
+                } else {
+                    obj_connect(item, obj_dude->tile, obj_dude->elevation, NULL);
+                    obj_destroy(item);
+                    arpg_float_text(obj_dude, "+heal", colorTable[992]);
+                }
             }
             intface_update_hit_points(true);
+            intface_update_items(false);
             gsound_play_sfx_file("ib1p1xx1");
             return;
         }

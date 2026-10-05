@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "game/arpg.h"
 #include "game/art.h"
 #include "game/combat.h"
 #include "game/combat_defs.h"
@@ -3369,6 +3370,14 @@ unsigned int compute_tpf(Object* object, int fid)
                 config_get_value(&game_config, GAME_CONFIG_PREFERENCES_KEY, GAME_CONFIG_COMBAT_SPEED_KEY, &combatSpeed);
                 fps += combatSpeed;
             }
+        }
+    }
+
+    // ARPG: Diablo-style attack, movement and hit-recovery speeds.
+    if (arpg_enabled()) {
+        fps = fps * arpg_anim_speed_pct(object, fid) / 100;
+        if (fps < 1) {
+            fps = 1;
         }
     }
 

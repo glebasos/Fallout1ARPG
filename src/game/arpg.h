@@ -62,6 +62,16 @@ bool arpg_is_engaged(Object* critter);
 // Called when a critter is removed from the map.
 void arpg_on_critter_removed(Object* critter);
 
+// Percent of normal animation speed for `fid` played on `obj` (compute_tpf).
+int arpg_anim_speed_pct(Object* obj, int fid);
+
+// Object flag bit (unused by vanilla) marking monsters spawned by the pack
+// system. Those also carry OBJECT_NO_SAVE, so the bit never reaches disk.
+#define ARPG_OBJECT_SPAWNED 0x08000000
+
+// True for monsters spawned by the pack system (never saved).
+bool arpg_is_spawned(Object* obj);
+
 // Hotkeys.
 void arpg_quick_heal();
 void arpg_quick_reload();

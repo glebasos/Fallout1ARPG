@@ -53,6 +53,9 @@ namespace fallout {
 // hit queue (released after the hit is resolved).
 typedef struct ArpgAttack {
     Attack attack;
+    // The critter that was aimed at; a miss can move attack.defender to
+    // whatever the stray bullet hits.
+    Object* target;
     int anim;
     int refs;
     bool fired;
@@ -86,6 +89,22 @@ static bool hold_to_move = true;
 static bool loot_drops = true;
 static int loot_pct = 100;
 static int energy_regen_pct = 100;
+
+// Animation speeds in percent (Diablo's IAS / FHR / run speed). Applied by
+// compute_tpf() through arpg_anim_speed_pct().
+static int attack_anim_pct = 200;
+static int aim_anim_pct = 300;
+static int enemy_attack_anim_pct = 150;
+static int reaction_anim_pct = 160;
+static int run_speed_pct = 120;
+static int enemy_run_speed_pct = 115;
+static int projectile_speed_pct = 150;
+
+// Run-and-gun metrics (autotest).
+static unsigned int player_target_time = 0;
+static int stat_shots_while_wasd = 0;
+static unsigned int stat_latency_total = 0;
+static int stat_latency_count = 0;
 
 // Energy (the blue globe) fuels special attacks.
 static double energy = -1.0;
@@ -204,6 +223,12 @@ static int arpg_cb_fired(void* a1, void* a2)
 {
     ArpgAttack* aa = (ArpgAttack*)a1;
     aa->fired = true;
+    if (aa->attack.attacker == obj_dude && player_target_time != 0) {
+        // Click-to-shot latency, for tuning the run-and-gun feel.
+        stat_latency_total += get_time() - player_target_time;
+        stat_latency_count++;
+        player_target_time = 0;
+    }
     return 0;
 }
 
@@ -253,6 +278,77 @@ bool arpg_autotest()
     return arpg_test;
 }
 
+bool arpg_is_spawned(Object* obj)
+{
+    return obj != NULL && (obj->flags & ARPG_OBJECT_SPAWNED) != 0;
+}
+
+static int arpg_monster_speed_pct(Object* critter);
+
+// Percent of an animation's normal frame rate (compute_tpf hook). Attacks,
+// aiming, hit recovery and running are faster, Diablo style; everything else
+// (talking, using, dying) keeps Fallout's pace.
+int arpg_anim_speed_pct(Object* obj, int fid)
+{
+    if (!arpg_on || obj == NULL) {
+        return 100;
+    }
+
+    int type = FID_TYPE(fid);
+    if (type == OBJ_TYPE_MISC) {
+        // Projectiles (and explosions) advance one step per frame.
+        return projectile_speed_pct;
+    }
+
+    if (type != OBJ_TYPE_CRITTER) {
+        return 100;
+    }
+
+    bool dude = obj == obj_dude;
+    int pct;
+    switch (FID_ANIM_TYPE(fid)) {
+    case ANIM_POINT:
+    case ANIM_UNPOINT:
+        pct = dude ? aim_anim_pct : enemy_attack_anim_pct;
+        break;
+    case ANIM_THROW_PUNCH:
+    case ANIM_KICK_LEG:
+    case ANIM_THROW_ANIM:
+    case ANIM_THRUST_ANIM:
+    case ANIM_SWING_ANIM:
+    case ANIM_FIRE_SINGLE:
+    case ANIM_FIRE_BURST:
+    case ANIM_FIRE_CONTINUOUS:
+        pct = dude ? attack_anim_pct : enemy_attack_anim_pct;
+        break;
+    case ANIM_WALK:
+    case ANIM_RUNNING:
+        if (dude || isPartyMember(obj)) {
+            // Followers keep up with the player.
+            pct = run_speed_pct;
+        } else if (arpg_is_engaged(obj)) {
+            pct = enemy_run_speed_pct;
+        } else {
+            return 100;
+        }
+        break;
+    case ANIM_HIT_FROM_FRONT:
+    case ANIM_HIT_FROM_BACK:
+    case ANIM_PRONE_TO_STANDING:
+    case ANIM_BACK_TO_STANDING:
+    case ANIM_DODGE_ANIM:
+        pct = reaction_anim_pct;
+        break;
+    default:
+        return 100;
+    }
+
+    if (!dude) {
+        pct = pct * arpg_monster_speed_pct(obj) / 100;
+    }
+    return pct;
+}
+
 void arpg_init()
 {
     bool enabled = true;
@@ -292,6 +388,13 @@ void arpg_init()
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "loot_pct", &loot_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "energy_regen_pct", &energy_regen_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "dodge_cost", &dodge_cost);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "attack_anim_pct", &attack_anim_pct);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "aim_anim_pct", &aim_anim_pct);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "enemy_attack_anim_pct", &enemy_attack_anim_pct);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "reaction_anim_pct", &reaction_anim_pct);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "run_speed_pct", &run_speed_pct);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "enemy_run_speed_pct", &enemy_run_speed_pct);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "projectile_speed_pct", &projectile_speed_pct);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "dump_items", &dump_items);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_iframes", &autotest_iframes);
     // Autotest: hold a WASD direction (0=W 1=D 2=S 3=A) through the real
@@ -320,6 +423,39 @@ void arpg_init()
     }
 
     arpg_log("ARPG: enabled=%d autotest=%d\n", arpg_on, arpg_test);
+}
+
+// Autotest: frame counts, frame rates and per-rotation frame-offset drift of
+// a critter's attack animations, to size the speed-ups.
+static void arpg_log_anim_info(Object* critter)
+{
+    static const int anims[] = { ANIM_STAND, ANIM_POINT, ANIM_FIRE_SINGLE, ANIM_FIRE_BURST, ANIM_UNPOINT, ANIM_THROW_PUNCH, ANIM_RUNNING, ANIM_HIT_FROM_FRONT };
+    for (int anim : anims) {
+        int fid = art_id(OBJ_TYPE_CRITTER, critter->fid & 0xFFF, anim, (critter->fid & 0xF000) >> 12, 0);
+        CacheEntry* handle;
+        Art* art = art_ptr_lock(fid, &handle);
+        if (art == NULL) {
+            continue;
+        }
+
+        int frames = art_frame_max_frame(art);
+        char drift[160];
+        int length = 0;
+        for (int rotation = 0; rotation < ROTATION_COUNT; rotation++) {
+            int sumX = 0;
+            int sumY = 0;
+            for (int frame = 1; frame < frames; frame++) {
+                int x;
+                int y;
+                art_frame_hot(art, frame, rotation, &x, &y);
+                sumX += x;
+                sumY += y;
+            }
+            length += snprintf(drift + length, sizeof(drift) - length, " %d,%d", sumX, sumY);
+        }
+        arpg_log("ARPG anim %s anim=%d frames=%d fps=%d drift:%s\n", critter_name(critter), anim, frames, art_frame_fps(art), drift);
+        art_ptr_unlock(handle);
+    }
 }
 
 static void arpg_free_crit_list()
@@ -410,6 +546,9 @@ void arpg_on_critter_removed(Object* critter)
     for (ArpgAttack* aa : live_attacks) {
         if (aa->attack.attacker == critter || aa->attack.defender == critter) {
             aa->invalid = true;
+        }
+        if (aa->target == critter) {
+            aa->target = NULL;
         }
         for (int index = 0; index < aa->attack.extrasLength; index++) {
             if (aa->attack.extras[index] == critter) {
@@ -525,7 +664,10 @@ static bool arpg_sequence_attack(ArpgAttack* aa)
     } else {
         sfx = gsnd_build_weapon_sfx_name(WEAPON_SOUND_EFFECT_ATTACK, weapon, attack->hitMode, defender);
     }
-    strncpy(attackSfx, sfx, sizeof(attackSfx) - 1);
+    if (sfx == NULL) {
+        sfx = gsnd_build_weapon_sfx_name(WEAPON_SOUND_EFFECT_ATTACK, weapon, attack->hitMode, defender);
+    }
+    strncpy(attackSfx, sfx != NULL ? sfx : "", sizeof(attackSfx) - 1);
     attackSfx[sizeof(attackSfx) - 1] = '\0';
 
     Object* projectile = NULL;
@@ -592,8 +734,34 @@ static bool arpg_sequence_attack(ArpgAttack* aa)
     return true;
 }
 
+// Drawing a weapon is an animation sequence (ANIM_TAKE_OUT) that sets the
+// weapon art when it ends. Running cancels it, leaving a critter that holds a
+// gun but has no art for shooting it. Put the right weapon art back.
+static void arpg_sync_weapon_art(Object* critter, int hitMode)
+{
+    Object* weapon = item_hit_with(critter, hitMode);
+    int code = weapon != NULL && item_get_type(weapon) == ITEM_TYPE_WEAPON ? item_w_anim_code(weapon) : 0;
+    if (((critter->fid & 0xF000) >> 12) == code) {
+        return;
+    }
+
+    int fid = art_id(OBJ_TYPE_CRITTER, critter->fid & 0xFFF, ANIM_STAND, code, critter->rotation + 1);
+    if (!art_exists(fid)) {
+        return;
+    }
+
+    Rect rect;
+    obj_change_fid(critter, fid, &rect);
+    tile_refresh_rect(&rect, critter->elevation);
+    arpg_log("ARPG: restored weapon art on %s (code %d)\n", critter_name(critter), code);
+}
+
 static bool arpg_start_attack(Object* attacker, Object* defender, int hitMode, int hitLocation = HIT_LOCATION_TORSO)
 {
+    if (!anim_busy(attacker) || FID_ANIM_TYPE(attacker->fid) == ANIM_WALK || FID_ANIM_TYPE(attacker->fid) == ANIM_RUNNING) {
+        arpg_sync_weapon_art(attacker, hitMode);
+    }
+
     if (hitMode == HIT_MODE_PUNCH && roll_random(1, 4) == 1) {
         int fid = art_id(OBJ_TYPE_CRITTER, attacker->fid & 0xFFF, ANIM_KICK_LEG, (attacker->fid & 0xF000) >> 12, (attacker->fid & 0x70000000) >> 28);
         if (art_exists(fid)) {
@@ -611,6 +779,7 @@ static bool arpg_start_attack(Object* attacker, Object* defender, int hitMode, i
     }
 
     aa->anim = item_w_anim(attacker, aa->attack.hitMode);
+    aa->target = defender;
     aa->refs = 1;
     aa->fired = false;
     aa->hitQueued = false;
@@ -618,6 +787,16 @@ static bool arpg_start_attack(Object* attacker, Object* defender, int hitMode, i
     live_attacks.push_back(aa);
 
     stat_attacks++;
+
+    if (arpg_test) {
+        // Once per attacker kind: frame counts and offsets of its attacks.
+        static std::vector<int> logged;
+        int key = attacker->fid & 0xF0FFF;
+        if (std::find(logged.begin(), logged.end(), key) == logged.end()) {
+            logged.push_back(key);
+            arpg_log_anim_info(attacker);
+        }
+    }
 
     if (!arpg_sequence_attack(aa)) {
         stat_attack_fail++;
@@ -780,6 +959,10 @@ static void arpg_resolve(ArpgAttack* aa)
         } else if (!hit && involvesPlayer) {
             arpg_float_text(defender, "miss", colorTable[21140]);
         }
+    } else if (aa->target != defender && aa->target != NULL && arpg_alive(aa->target)
+        && (attacker == obj_dude || aa->target == obj_dude)) {
+        // The shot went wide and hit the scenery.
+        arpg_float_text(aa->target, "miss", colorTable[21140]);
     }
 
     if (defender != obj_dude && FID_TYPE(defender->fid) == OBJ_TYPE_CRITTER) {
@@ -917,6 +1100,9 @@ void arpg_player_attack(Object* target, bool inPlace)
         return;
     }
 
+    if (player_target != target) {
+        player_target_time = get_time();
+    }
     player_target = target;
     player_chasing = false;
     player_next_repath = 0;
@@ -1093,13 +1279,18 @@ static void arpg_player_tick(unsigned int now)
         return;
     }
 
-    // WASD movement wins over attacking; Fallout can't fire while running.
-    if (wasd_moving) {
-        return;
+    // Run and gun: an attack cuts a walk or run short (WASD picks the run up
+    // again once the shot is out), but never another attack or a hit
+    // reaction.
+    if (anim_busy(obj_dude)) {
+        int anim = FID_ANIM_TYPE(obj_dude->fid);
+        if (anim != ANIM_WALK && anim != ANIM_RUNNING) {
+            return;
+        }
     }
 
-    if (anim_busy(obj_dude) && !player_chasing) {
-        return;
+    if (wasd_moving) {
+        stat_shots_while_wasd++;
     }
 
     player_chasing = false;
@@ -1548,14 +1739,16 @@ void arpg_tick()
         }
 
         if (autotest_seconds > 0 && now - autotest_start > (unsigned int)autotest_seconds * 1000) {
-            arpg_log("ARPG autotest done: dude hp=%d/%d xp=%d attacks=%d failed=%d react_blocked=%d kills=%d\n",
+            arpg_log("ARPG autotest done: dude hp=%d/%d xp=%d attacks=%d failed=%d react_blocked=%d kills=%d wasd_shots=%d latency_ms=%d\n",
                 critter_get_hits(obj_dude),
                 stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS),
                 stat_pc_get(PC_STAT_EXPERIENCE),
                 stat_attacks,
                 stat_attack_fail,
                 stat_react_blocked,
-                stat_kills);
+                stat_kills,
+                stat_shots_while_wasd,
+                stat_latency_count > 0 ? (int)(stat_latency_total / stat_latency_count) : -1);
             game_user_wants_to_quit = 2;
         }
     }
@@ -1697,7 +1890,12 @@ void arpg_tick()
             Object* best = NULL;
             for (int index = 0; index < crit_count; index++) {
                 Object* critter = crit_list[index];
-                if (arpg_is_attackable(critter) && obj_dist(critter, obj_dude) <= 12 && can_see(obj_dude, critter)
+                // can_see() depends on facing; a WASD runner shoots at
+                // anything in its line of fire, behind it included.
+                bool visible = controls == ARPG_CONTROLS_WASD
+                    ? arpg_bad_shot(obj_dude, critter, HIT_MODE_LEFT_WEAPON_PRIMARY) == COMBAT_BAD_SHOT_OK
+                    : can_see(obj_dude, critter);
+                if (arpg_is_attackable(critter) && obj_dist(critter, obj_dude) <= 12 && visible
                     && !(critter == player_unreachable && now < player_unreachable_until)) {
                     if (best == NULL || obj_dist(critter, obj_dude) < obj_dist(best, obj_dude)) {
                         best = critter;
@@ -1711,10 +1909,10 @@ void arpg_tick()
                 arpg_log("ARPG autoplay: aimed shot loc=%d at %s\n", aims[nextAim % 3], critter_name(best));
                 arpg_player_aimed(best, aims[nextAim++ % 3]);
             } else if (best != NULL && arpg_energy() >= arpg_energy_max()) {
-                arpg_player_special(best);
+                arpg_player_special(best, arpg_attack_in_place());
             } else if (best != NULL) {
                 arpg_log("ARPG autoplay: targeting %s\n", critter_name(best));
-                arpg_player_attack(best);
+                arpg_player_attack(best, arpg_attack_in_place());
             }
         }
     }
@@ -1787,6 +1985,11 @@ void arpg_tick()
     if (anyEngaged) {
         alert_until = std::max(alert_until, now + 3000);
     }
+}
+
+static int arpg_monster_speed_pct(Object* critter)
+{
+    return 100;
 }
 
 bool arpg_is_engaged(Object* critter)

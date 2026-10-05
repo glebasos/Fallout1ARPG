@@ -1,6 +1,7 @@
 #include "game/queue.h"
 
 #include "game/actions.h"
+#include "game/arpg.h"
 #include "game/critter.h"
 #include "game/display.h"
 #include "game/game.h"
@@ -169,9 +170,13 @@ int queue_save(DB_FILE* stream)
 
     int count = 0;
 
+    // ARPG: monsters spawned by the pack system are never saved, so neither
+    // are their events (a knockout on one would load with a NULL owner).
     queueListNode = queue;
     while (queueListNode != NULL) {
-        count += 1;
+        if (!arpg_is_spawned(queueListNode->owner)) {
+            count += 1;
+        }
         queueListNode = queueListNode->next;
     }
 
@@ -181,6 +186,11 @@ int queue_save(DB_FILE* stream)
 
     queueListNode = queue;
     while (queueListNode != NULL) {
+        if (arpg_is_spawned(queueListNode->owner)) {
+            queueListNode = queueListNode->next;
+            continue;
+        }
+
         Object* object = queueListNode->owner;
         int objectId = object != NULL ? object->id : -2;
 

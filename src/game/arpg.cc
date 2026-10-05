@@ -107,6 +107,7 @@ static unsigned int wasd_next_move = 0;
 static bool wasd_moving = false;
 static int autotest_wasd = -1;
 static bool dump_items = false;
+static bool autotest_iframes = false;
 
 static unsigned int next_hold_action = 0;
 static int hold_last_tile = -1;
@@ -292,6 +293,7 @@ void arpg_init()
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "energy_regen_pct", &energy_regen_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "dodge_cost", &dodge_cost);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "dump_items", &dump_items);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_iframes", &autotest_iframes);
     // Autotest: hold a WASD direction (0=W 1=D 2=S 3=A) through the real
     // movement path.
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_wasd", &autotest_wasd);
@@ -309,7 +311,7 @@ void arpg_init()
 
     // Command-line test switches are merged into game_config, which CE saves
     // back to fallout.cfg on exit. Neutralize them so they don't stick.
-    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd" };
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_iframes" };
     for (const char* key : testKeys) {
         char* value;
         if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
@@ -1622,6 +1624,11 @@ void arpg_tick()
         arpg_log("ARPG autotest: knocking the player down\n");
     }
 
+    if (arpg_test && autotest_iframes) {
+        // Permanent dodge i-frames to exercise the dodged-hit path.
+        dodge_until = now + 60000;
+    }
+
     if (autoplay) {
         // Test bot drinks a "potion" (Q) at low life.
         static unsigned int nextHeal = 0;
@@ -1980,9 +1987,22 @@ static int arpg_step_target(double dx, double dy, int maxHexes, int minHexes)
     return -1;
 }
 
+// True while the player is standing, walking or running, i.e. not in a hit
+// reaction, knockdown, get-up or attack animation that movement must not cut
+// short (reactions aren't prioritized, so register_clear would kill them).
+static bool arpg_dude_can_move()
+{
+    int anim = FID_ANIM_TYPE(obj_dude->fid);
+    return anim == ANIM_STAND || anim == ANIM_WALK || anim == ANIM_RUNNING;
+}
+
 static bool arpg_run_to(int tile)
 {
     if (tile == -1 || tile == obj_dude->tile) {
+        return false;
+    }
+
+    if (!arpg_dude_can_move()) {
         return false;
     }
 
@@ -2086,11 +2106,13 @@ static void arpg_wasd_tick(unsigned int now)
 
     if ((dx == 0 && dy == 0) || !arpg_input_ready()) {
         if (wasd_moving) {
-            // Released: stop now instead of finishing the path. A prioritized
-            // attack sequence is left alone by register_clear.
+            // Released: stop now instead of finishing the path, but never
+            // cut a hit reaction, knockdown or attack short.
             wasd_moving = false;
             wasd_target_tile = -1;
-            register_clear(obj_dude);
+            if (arpg_dude_can_move()) {
+                register_clear(obj_dude);
+            }
         }
         wasd_dx = 0;
         wasd_dy = 0;
@@ -2208,7 +2230,9 @@ static void arpg_cycle_controls()
     controls = (controls + 1) % 3;
     if (controls != ARPG_CONTROLS_WASD && wasd_moving) {
         wasd_moving = false;
-        register_clear(obj_dude);
+        if (arpg_dude_can_move()) {
+            register_clear(obj_dude);
+        }
     }
     config_set_string(&game_config, ARPG_CONFIG_SECTION, "controls", names[controls]);
 
@@ -2223,6 +2247,10 @@ bool arpg_handle_key(int key)
 {
     if (!arpg_on || !intface_is_enabled()) {
         return false;
+    }
+
+    if (arpg_test) {
+        arpg_log("ARPG: key %d (controls=%d)\n", key, controls);
     }
 
     if (key == KEY_CTRL_W) {

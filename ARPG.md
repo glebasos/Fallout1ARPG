@@ -62,7 +62,7 @@ fallout-arpg.exe [arpg]autotest=1 [arpg]autoplay=1 [arpg]autotest_seconds=90 [ar
                  [arpg]autotest_map=CAVES.MAP [arpg]autotest_weapon=23 [arpg]autotest_ammo=35
                  [arpg]autotest_armor=17 [arpg]autotest_xp=30000
 ```
-`[arpg]autotest_wasd=0..3` holds W/D/S/A (3 s on, 1 s off) through the real WASD movement path;
+`[arpg]autotest_iframes=1` keeps dodge i-frames on. `[arpg]autotest_wasd=0..3` holds W/D/S/A (3 s on, 1 s off) through the real WASD movement path;
 `[arpg]dump_items=1` logs every item PID. Test keys are reset in fallout.cfg on exit, but other
 overrides like `controls` or `dodge_cost` are saved.
 Starts a new game with the combat premade, plays with a bot, writes `arpg.log`, screenshots, and a

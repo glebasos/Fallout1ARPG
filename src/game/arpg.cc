@@ -70,6 +70,10 @@ static bool arpg_test = false;
 static int enemy_delay_pct = 130;
 static int player_delay_pct = 100;
 static int stagger_pct = 8;
+static int player_stagger_pct = 15;
+static int stagger_immunity_ms = 2000;
+static int autotest_xp = 0;
+static std::unordered_map<Object*, unsigned int> stagger_until;
 static int leash_distance = 30;
 static bool show_numbers = true;
 static bool always_run = true;
@@ -98,6 +102,8 @@ static unsigned int next_autoshot = 0;
 static FILE* arpg_log_file = NULL;
 static int autotest_weapon_pid = -1;
 static int autotest_ammo_pid = -1;
+static int autotest_armor_pid = -1;
+static char autotest_map[64] = "";
 static bool autotest_armed = false;
 static unsigned int autoplay_idle_since = 0;
 static int stat_attacks = 0;
@@ -142,8 +148,17 @@ static Object* player_target = NULL;
 static bool player_chasing = false;
 static unsigned int player_next_attack = 0;
 static unsigned int player_next_repath = 0;
+static int player_chase_failures = 0;
 
 static void arpg_drop_loot(Object* victim);
+
+// display_print() modifies its argument, so never pass it a literal.
+static void arpg_print(const char* text)
+{
+    char buffer[256];
+    snprintf(buffer, sizeof(buffer), "%s", text);
+    display_print(buffer);
+}
 
 static void arpg_release(ArpgAttack* aa)
 {
@@ -199,6 +214,11 @@ bool arpg_labels_always()
     return labels_always;
 }
 
+char* arpg_autotest_map()
+{
+    return autotest_map[0] != '\0' ? autotest_map : NULL;
+}
+
 bool arpg_autotest()
 {
     return arpg_test;
@@ -213,10 +233,16 @@ void arpg_init()
     bool autotest = false;
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest", &autotest);
     arpg_test = autotest;
+    if (arpg_test) {
+        arpg_install_crash_handler();
+    }
 
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "enemy_attack_delay_pct", &enemy_delay_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "player_attack_delay_pct", &player_delay_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "stagger_pct", &stagger_pct);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "player_stagger_pct", &player_stagger_pct);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "stagger_immunity_ms", &stagger_immunity_ms);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_xp", &autotest_xp);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "leash_distance", &leash_distance);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "damage_numbers", &show_numbers);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autoplay", &autoplay);
@@ -224,6 +250,11 @@ void arpg_init()
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autoshot_ms", &autoshot_ms);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_weapon", &autotest_weapon_pid);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_ammo", &autotest_ammo_pid);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_armor", &autotest_armor_pid);
+    char* mapName;
+    if (config_get_string(&game_config, ARPG_CONFIG_SECTION, "autotest_map", &mapName) && mapName[0] != '\0' && strcmp(mapName, "0") != 0) {
+        snprintf(autotest_map, sizeof(autotest_map), "%s", mapName);
+    }
 
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "always_run", &always_run);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "hold_to_move", &hold_to_move);
@@ -234,7 +265,7 @@ void arpg_init()
 
     // Command-line test switches are merged into game_config, which CE saves
     // back to fallout.cfg on exit. Neutralize them so they don't stick.
-    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items" };
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp" };
     for (const char* key : testKeys) {
         char* value;
         if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
@@ -272,6 +303,7 @@ void arpg_reset()
     }
 
     actors.clear();
+    stagger_until.clear();
     combat_ai_over();
     arpg_free_crit_list();
     player_target = NULL;
@@ -308,6 +340,7 @@ void arpg_on_critter_removed(Object* critter)
     }
 
     actors.erase(critter);
+    stagger_until.erase(critter);
 
     for (auto& entry : actors) {
         if (entry.second.target == critter) {
@@ -575,13 +608,27 @@ static void arpg_react(Attack* attack, Object* victim, int damage, int flags, in
 
     int maxHp = stat_level(victim, STAT_MAXIMUM_HIT_POINTS);
     bool dies = (flags & DAM_DEAD) != 0;
-    bool big = dies
-        || (flags & (DAM_KNOCKED_DOWN | DAM_KNOCKED_OUT | DAM_CRITICAL | DAM_ON_FIRE)) != 0
-        || knockback > 0
-        || damage * 100 >= maxHp * stagger_pct;
+    bool forced = dies
+        || (flags & (DAM_KNOCKED_DOWN | DAM_KNOCKED_OUT)) != 0
+        || knockback > 0;
+    int pct = victim == obj_dude ? player_stagger_pct : stagger_pct;
+    bool big = forced
+        || (flags & (DAM_CRITICAL | DAM_ON_FIRE)) != 0
+        || damage * 100 >= maxHp * pct;
 
     if (!big || damage <= 0) {
         return;
+    }
+
+    // Hit recovery: after a stagger, a victim can't be staggered again for a
+    // moment, so a stream of hits can't lock it out of acting.
+    if (!forced) {
+        unsigned int now = get_time();
+        unsigned int& until = stagger_until[victim];
+        if (now < until) {
+            return;
+        }
+        until = now + stagger_immunity_ms;
     }
 
     int rc = dies ? register_clear_force(victim) : register_clear(victim);
@@ -748,11 +795,24 @@ bool arpg_is_attackable(Object* critter)
         return true;
     }
 
-    // Monsters (anything you can't talk to) are fair game on a plain click.
-    return arpg_alive(critter)
-        && critter != obj_dude
-        && !isPartyMember(critter)
-        && !obj_action_can_talk_to(critter);
+    if (!arpg_alive(critter) || critter == obj_dude || isPartyMember(critter)) {
+        return false;
+    }
+
+    // Monsters are fair game on a plain click. People (and livestock and
+    // dogs) need to be hostile first, or targeted with the crosshair.
+    switch (critter_kill_count_type(critter)) {
+    case KILL_TYPE_RADSCORPION:
+    case KILL_TYPE_RAT:
+    case KILL_TYPE_FLOATER:
+    case KILL_TYPE_CENTAUR:
+    case KILL_TYPE_MANTIS:
+    case KILL_TYPE_DEATH_CLAW:
+    case KILL_TYPE_PLANT:
+        return true;
+    default:
+        return false;
+    }
 }
 
 int arpg_energy_max()
@@ -797,6 +857,7 @@ void arpg_player_attack(Object* target)
     player_chasing = false;
     player_next_repath = 0;
     player_special = false;
+    player_chase_failures = 0;
 }
 
 void arpg_player_special(Object* target)
@@ -809,6 +870,7 @@ void arpg_player_special(Object* target)
     player_chasing = false;
     player_next_repath = 0;
     player_special = true;
+    player_chase_failures = 0;
 }
 
 void arpg_player_clear_target()
@@ -910,6 +972,19 @@ static void arpg_player_tick(unsigned int now)
             arpg_move_towards(obj_dude, player_target);
             player_chasing = true;
             player_next_repath = now + 1000;
+
+            // No path (wall, closed door, other level section): give up
+            // after a few tries instead of standing there forever.
+            if (!anim_busy(obj_dude)) {
+                player_chase_failures++;
+                if (player_chase_failures >= 3) {
+                    arpg_log("ARPG: can't reach %s\n", critter_name(player_target));
+                    player_target = NULL;
+                    player_chasing = false;
+                }
+            } else {
+                player_chase_failures = 0;
+            }
         }
         return;
     }
@@ -1328,6 +1403,18 @@ void arpg_tick()
             }
             autotest_start = now;
             arpg_log("ARPG autotest start, map %d elevation %d\n", map_get_index_number(), map_elevation);
+            for (int index = 0; index < crit_count; index++) {
+                Object* critter = crit_list[index];
+                if (critter != obj_dude) {
+                    arpg_log("  critter %s pid=%d team=%d talk=%d dist=%d xp=%d\n",
+                        critter_name(critter),
+                        critter->pid & 0xFFFFFF,
+                        critter->data.critter.combat.team,
+                        obj_action_can_talk_to(critter) ? 1 : 0,
+                        obj_dist(critter, obj_dude),
+                        critter_kill_exps(critter));
+                }
+            }
         }
 
         if (autoshot_ms > 0 && now >= next_autoshot) {
@@ -1365,7 +1452,22 @@ void arpg_tick()
                     }
                 }
             }
+            if (autotest_armor_pid != -1) {
+                Object* armor;
+                if (obj_pid_new(&armor, autotest_armor_pid) == 0) {
+                    if (item_add_force(obj_dude, armor, 1) == 0) {
+                        obj_disconnect(armor, NULL);
+                    }
+                    inven_wield(obj_dude, armor, 0);
+                }
+            }
+            if (autotest_xp > 0) {
+                stat_pc_add_experience(autotest_xp);
+                critter_adjust_hits(obj_dude, 999);
+            }
             intface_update_items(false);
+            intface_update_ac(false);
+            intface_update_hit_points(false);
             arpg_log("ARPG autotest: armed with %s\n", item_name(weapon));
         }
     }
@@ -1395,7 +1497,7 @@ void arpg_tick()
             Object* best = NULL;
             for (int index = 0; index < crit_count; index++) {
                 Object* critter = crit_list[index];
-                if (arpg_is_attackable(critter) && obj_dist(critter, obj_dude) <= leash_distance) {
+                if (arpg_is_attackable(critter) && obj_dist(critter, obj_dude) <= 12 && can_see(obj_dude, critter)) {
                     if (best == NULL || obj_dist(critter, obj_dude) < obj_dist(best, obj_dude)) {
                         best = critter;
                     }
@@ -1484,7 +1586,7 @@ void arpg_quick_heal()
         }
     }
 
-    display_print((char*)"No stimpaks.");
+    arpg_print("No stimpaks.");
 }
 
 void arpg_quick_reload()
@@ -1535,7 +1637,7 @@ void arpg_debug_warp_to_enemy()
     }
 
     if (best == NULL) {
-        display_print((char*)"ARPG: no critters on this level.");
+        arpg_print("ARPG: no critters on this level.");
         return;
     }
 

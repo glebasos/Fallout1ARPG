@@ -104,7 +104,7 @@ int gnw_main(int argc, char** argv)
         }
         loadColorTable("color.pal");
         roll_set_seed(-1);
-        main_load_new(mainMap);
+        main_load_new(arpg_autotest_map() != NULL ? arpg_autotest_map() : mainMap);
         main_game_loop();
         main_unload_new();
         main_exit_system();

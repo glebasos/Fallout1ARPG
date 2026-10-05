@@ -1586,10 +1586,22 @@ void arpg_tick()
                     inven_wield(obj_dude, armor, 0);
                 }
             }
-            Object* stims;
-            if (obj_pid_new(&stims, PROTO_ID_STIMPACK) == 0) {
-                if (item_add_force(obj_dude, stims, 5) == 0) {
-                    obj_disconnect(stims, NULL);
+            // Stimpaks plus one of each flask-slot drug (1-5 keys).
+            static const int kit[][2] = {
+                { PROTO_ID_STIMPACK, 5 },
+                { PROTO_ID_SUPER_STIMPACK, 2 },
+                { PROTO_ID_RADAWAY, 1 },
+                { 109 /* Rad-X */, 1 },
+                { PROTO_ID_BUFF_OUT, 2 },
+                { PROTO_ID_MENTATS, 2 },
+                { PROTO_ID_PSYCHO, 2 },
+            };
+            for (const auto& entry : kit) {
+                Object* drug;
+                if (obj_pid_new(&drug, entry[0]) == 0) {
+                    if (item_add_force(obj_dude, drug, entry[1]) == 0) {
+                        obj_disconnect(drug, NULL);
+                    }
                 }
             }
             if (autotest_xp > 0) {

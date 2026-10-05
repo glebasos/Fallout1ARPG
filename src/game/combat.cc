@@ -7,6 +7,7 @@
 #include "game/actions.h"
 #include "game/anim.h"
 #include "game/art.h"
+#include "game/arpg.h"
 #include "game/combatai.h"
 #include "game/critter.h"
 #include "game/display.h"
@@ -2376,6 +2377,11 @@ static bool combat_should_end()
 // 0x420B20
 void combat(STRUCT_664980* attack)
 {
+    if (arpg_enabled()) {
+        arpg_request_combat(attack);
+        return;
+    }
+
     if (attack == NULL
         || (attack->attacker == NULL || attack->attacker->elevation == map_elevation)
         || (attack->defender == NULL || attack->defender->elevation == map_elevation)) {
@@ -3634,7 +3640,10 @@ static void damage_object(Object* obj, int damage, bool animated, bool a4)
                     scriptOverrides = scr->scriptOverrides;
                 }
 
-                if (!scriptOverrides) {
+                if (!scriptOverrides && arpg_enabled()) {
+                    combat_give_exps(critter_kill_exps(obj));
+                    critter_kill_count_inc(critter_kill_count_type(obj));
+                } else if (!scriptOverrides) {
                     combat_exps += critter_kill_exps(obj);
                     critter_kill_count_inc(critter_kill_count_type(obj));
                 }
@@ -4478,6 +4487,11 @@ void combat_attack_this(Object* a1)
         return;
     }
 
+    if (arpg_enabled()) {
+        arpg_player_attack(a1);
+        return;
+    }
+
     if ((combat_state & 0x02) == 0) {
         return;
     }
@@ -4715,6 +4729,8 @@ int combat_explode_scenery(Object* a1, Object* a2)
 // 0x424374
 void combat_delete_critter(Object* obj)
 {
+    arpg_on_critter_removed(obj);
+
     // TODO: Check entire function.
     if (!isInCombat()) {
         return;
@@ -4752,6 +4768,16 @@ void combat_delete_critter(Object* obj)
 
     obj->data.critter.combat.whoHitMe = NULL;
     combatai_delete_critter(obj);
+}
+
+int combat_compute_attack(Attack* attack)
+{
+    return compute_attack(attack);
+}
+
+void combat_arpg_standup(Object* critter)
+{
+    combat_standup(critter);
 }
 
 } // namespace fallout

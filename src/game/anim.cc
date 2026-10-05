@@ -454,6 +454,29 @@ int register_clear(Object* a1)
     return -1;
 }
 
+// ARPG: same as register_clear, but also ends prioritized sequences.
+int register_clear_force(Object* a1)
+{
+    int rc = -1;
+    for (int animationSequenceIndex = 0; animationSequenceIndex < ANIMATION_SEQUENCE_LIST_CAPACITY; animationSequenceIndex++) {
+        AnimationSequence* animationSequence = &(anim_set[animationSequenceIndex]);
+        if (animationSequence->field_0 == -1000) {
+            continue;
+        }
+
+        for (int animationDescriptionIndex = 0; animationDescriptionIndex < animationSequence->length; animationDescriptionIndex++) {
+            AnimationDescription* animationDescription = &(animationSequence->animations[animationDescriptionIndex]);
+            if (a1 == animationDescription->owner && animationDescription->kind != 11) {
+                anim_set_end(animationSequenceIndex);
+                rc = 0;
+                break;
+            }
+        }
+    }
+
+    return rc;
+}
+
 // 0x413788
 int register_end()
 {

@@ -57,6 +57,8 @@ bool combat_is_shot_blocked(Object* a1, int from, int to, Object* a4, int* a5);
 int combat_player_knocked_out_by();
 int combat_explode_scenery(Object* a1, Object* a2);
 void combat_delete_critter(Object* obj);
+int combat_compute_attack(Attack* attack);
+void combat_arpg_standup(Object* critter);
 
 static inline bool isInCombat()
 {

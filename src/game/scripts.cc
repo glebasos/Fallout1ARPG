@@ -7,6 +7,7 @@
 
 #include "game/actions.h"
 #include "game/automap.h"
+#include "game/arpg.h"
 #include "game/combat.h"
 #include "game/critter.h"
 #include "game/elevator.h"
@@ -619,7 +620,9 @@ static void script_chk_critters()
 
             if (scriptListExtent != NULL) {
                 Script* script = &(scriptListExtent->scripts[scriptIndex]);
-                exec_script_proc(script->scr_id, proc);
+                if (script->owner == NULL || !arpg_is_engaged(script->owner)) {
+                    exec_script_proc(script->scr_id, proc);
+                }
             }
         }
     }

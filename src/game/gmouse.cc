@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "game/actions.h"
+#include "game/arpg.h"
 #include "game/art.h"
 #include "game/combat.h"
 #include "game/critter.h"
@@ -875,6 +876,16 @@ void gmouse_handle_event(int mouseX, int mouseY, int mouseState)
 
     if ((mouseState & MOUSE_EVENT_LEFT_BUTTON_UP) != 0) {
         if (gmouse_3d_current_mode == GAME_MOUSE_MODE_MOVE) {
+            if (arpg_enabled()) {
+                // Diablo-style: clicking an enemy attacks it.
+                Object* target = object_under_mouse(OBJ_TYPE_CRITTER, false, map_elevation);
+                if (target != NULL && arpg_is_hostile(target)) {
+                    arpg_player_attack(target);
+                    return;
+                }
+                arpg_player_clear_target();
+            }
+
             int actionPoints;
             if (isInCombat()) {
                 actionPoints = combat_free_move + obj_dude->data.critter.combat.ap;

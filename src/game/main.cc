@@ -18,6 +18,7 @@
 #include "game/credits.h"
 #include "game/cycle.h"
 #include "game/endgame.h"
+#include "game/arpg.h"
 #include "game/game.h"
 #include "game/gconfig.h"
 #include "game/gmouse.h"
@@ -94,6 +95,21 @@ int gnw_main(int argc, char** argv)
 
     if (!main_init_system(argc, argv)) {
         return 1;
+    }
+
+    if (arpg_autotest()) {
+        // ARPG test harness: straight into a new game with the combat premade.
+        if (proto_dude_init("premade\\combat.gcd") == -1) {
+            debug_printf("ARPG: failed to load premade character\n");
+        }
+        loadColorTable("color.pal");
+        roll_set_seed(-1);
+        main_load_new(mainMap);
+        main_game_loop();
+        main_unload_new();
+        main_exit_system();
+        autorun_mutex_destroy();
+        return 0;
     }
 
     gmovie_play(MOVIE_IPLOGO, GAME_MOVIE_FADE_IN);
@@ -328,6 +344,8 @@ static void main_game_loop()
         scripts_check_state();
 
         map_check_state();
+
+        arpg_tick();
 
         if (main_game_paused != 0) {
             main_game_paused = 0;

@@ -5,6 +5,7 @@
 
 #include "game/actions.h"
 #include "game/anim.h"
+#include "game/arpg.h"
 #include "game/automap.h"
 #include "game/bmpdlog.h"
 #include "game/combat.h"
@@ -133,6 +134,7 @@ int game_init(const char* windowTitle, bool isMapper, int font, int flags, int a
     }
 
     gconfig_init(isMapper, argc, argv);
+    arpg_init();
 
     game_in_mapper = isMapper;
 
@@ -380,6 +382,7 @@ void game_reset()
     ResetLoadSave();
     gdialog_reset();
     combat_reset();
+    arpg_reset();
     game_user_wants_to_quit = 0;
     automap_reset();
     init_options_menu();
@@ -657,6 +660,23 @@ int game_handle_input(int eventCode, bool isInCombatMode)
                 gmouse_set_cursor(MOUSE_CURSOR_USE_CROSSHAIR);
                 gmouse_3d_set_mode(mode);
             }
+        }
+        break;
+    case KEY_UPPERCASE_Q:
+    case KEY_LOWERCASE_Q:
+        if (intface_is_enabled()) {
+            arpg_quick_heal();
+        }
+        break;
+    case KEY_UPPERCASE_R:
+    case KEY_LOWERCASE_R:
+        if (intface_is_enabled()) {
+            arpg_quick_reload();
+        }
+        break;
+    case KEY_F11:
+        if (arpg_autotest()) {
+            arpg_debug_warp_to_enemy();
         }
         break;
     case KEY_UPPERCASE_Z:

@@ -870,6 +870,13 @@ void gmouse_handle_event(int mouseX, int mouseY, int mouseState)
             if (arpg_enabled() && gmouse_3d_current_mode == GAME_MOUSE_MODE_MOVE) {
                 // Diablo-style: right-click an enemy for a special attack.
                 bool inPlace = arpg_attack_in_place();
+                if (arpg_rmb_is_skill()) {
+                    // D2: the right button is only the skill; a near miss
+                    // snaps to an enemy instead of switching the cursor
+                    // (F switches it).
+                    arpg_rmb_special(inPlace);
+                    return;
+                }
                 Object* target = inPlace ? arpg_target_near_cursor() : object_under_mouse(OBJ_TYPE_CRITTER, false, map_elevation);
                 if (target != NULL && arpg_is_attackable(target)) {
                     arpg_player_special(target, inPlace);

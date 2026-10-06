@@ -255,6 +255,7 @@ static int leash_distance = 30;
 static bool show_numbers = true;
 static bool always_run = true;
 static bool labels_always = false;
+static bool rmb_toggles_mode = false;
 static bool hold_to_move = true;
 static bool loot_drops = true;
 static bool auto_caps = true;
@@ -369,6 +370,7 @@ static int autotest_die = 0;
 static bool autotest_shrines = false;
 static bool autotest_gallery = false;
 static bool autotest_loot = false;
+static bool autotest_rmb = false;
 static bool autotest_swarm = false;
 static int autotest_magic = 0;
 static bool autotest_encounter = false;
@@ -669,6 +671,7 @@ void arpg_init()
 
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "always_run", &always_run);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "hold_to_move", &hold_to_move);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "rmb_toggles_mode", &rmb_toggles_mode);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "labels_always", &labels_always);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "loot_drops", &loot_drops);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "auto_caps", &auto_caps);
@@ -711,6 +714,7 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_shrines", &autotest_shrines);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_gallery", &autotest_gallery);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_loot", &autotest_loot);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_rmb", &autotest_rmb);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_swarm", &autotest_swarm);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_magic", &autotest_magic);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_encounter", &autotest_encounter);
@@ -733,7 +737,7 @@ void arpg_init()
 
     // Command-line test switches are merged into game_config, which CE saves
     // back to fallout.cfg on exit. Neutralize them so they don't stick.
-    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_loot", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile", "autotest_sweep_encounters" };
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_loot", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile", "autotest_sweep_encounters", "autotest_rmb", "autotest_hover" };
     for (const char* key : testKeys) {
         char* value;
         if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
@@ -4610,6 +4614,41 @@ void arpg_tick()
             }
         }
 
+        // Right-button test: F twice (cursor mode round trip), then near-miss
+        // right clicks with the cursor ~1 hex off an enemy, every 3 s.
+        static int rmbStep = 0;
+        static unsigned int nextRmb = 0;
+        if (autotest_rmb && now - autotest_start > 4000 && now >= nextRmb) {
+            if (rmbStep < 2) {
+                arpg_handle_key(KEY_LOWERCASE_F);
+                arpg_log("ARPG autotest: F -> cursor mode %d\n", gmouse_3d_get_mode());
+                nextRmb = now + 3000;
+            } else {
+                arpg_refresh_list();
+                Object* enemy = NULL;
+                for (int index = 0; index < crit_count; index++) {
+                    if (crit_list[index]->elevation == map_elevation && arpg_is_attackable(crit_list[index])
+                        && obj_dist(obj_dude, crit_list[index]) <= 10
+                        && (enemy == NULL || obj_dist(obj_dude, crit_list[index]) < obj_dist(obj_dude, enemy))) {
+                        enemy = crit_list[index];
+                    }
+                }
+                int x;
+                int y;
+                if (enemy != NULL && tile_coord(enemy->tile, &x, &y, map_elevation) == 0) {
+                    // Tile origin + one hex sideways: off the sprite, inside the 2-hex snap.
+                    mouse_set_position(x + 16 + 32, y + 8);
+                    int mode = gmouse_3d_get_mode();
+                    Object* snapped = arpg_target_near_cursor();
+                    arpg_rmb_special(arpg_attack_in_place());
+                    arpg_log("ARPG autotest: rmb near miss enemy=%p snapped=%p mode %d -> %d\n",
+                        (void*)enemy, (void*)snapped, mode, gmouse_3d_get_mode());
+                }
+                nextRmb = now + 3000;
+            }
+            rmbStep++;
+        }
+
         // Respawn test: drop to 1 HP so the next monster hit is a killing blow.
         static bool dieDone = false;
         if (autotest_die > 0 && !dieDone && now - autotest_start > (unsigned int)autotest_die * 1000) {
@@ -5119,6 +5158,38 @@ Object* arpg_target_near_cursor()
         }
     }
     return best;
+}
+
+bool arpg_rmb_is_skill()
+{
+    return arpg_on && controls != ARPG_CONTROLS_CLASSIC && !rmb_toggles_mode;
+}
+
+void arpg_rmb_special(bool inPlace)
+{
+    Object* target = arpg_target_near_cursor();
+    if (target == NULL) {
+        target = arpg_player_target();
+        if (target != NULL && !arpg_is_attackable(target)) {
+            target = NULL;
+        }
+    }
+
+    if (target == NULL) {
+        arpg_float_text(obj_dude, "No target", colorTable[21140]);
+        return;
+    }
+
+    arpg_player_special(target, inPlace);
+}
+
+// F: Fallout's right-click cursor switch (move/attack <-> use/talk/look).
+static void arpg_toggle_cursor_mode()
+{
+    if (gmouse_3d_is_on()) {
+        gmouse_3d_toggle_mode();
+        gsound_play_sfx_file("ib1p1xx1");
+    }
 }
 
 // Uses the first carried drug from `pids` (a PoE "flask"). Returns true if
@@ -5897,8 +5968,8 @@ static void arpg_cycle_controls()
     static const char* names[] = { "classic", "poe", "wasd" };
     static const char* descriptions[] = {
         "Controls: classic (Q heal, R reload, Shift walks).",
-        "Controls: Path of Exile (1-5 flasks, Q/E/T aimed shots, Shift: attack in place, Space: dodge).",
-        "Controls: WASD (W/A/S/D move, mouse aims, attacks in place).",
+        "Controls: Path of Exile (1-5 flasks, Q/E/T aimed shots, Shift: attack in place, Space: dodge, F: use cursor).",
+        "Controls: WASD (W/A/S/D move, mouse aims, attacks in place, F: use cursor).",
     };
 
     controls = (controls + 1) % 3;
@@ -5983,6 +6054,10 @@ bool arpg_handle_key(int key)
         return true;
     case KEY_SPACE:
         arpg_dodge();
+        return true;
+    case KEY_LOWERCASE_F:
+    case KEY_UPPERCASE_F:
+        arpg_toggle_cursor_mode();
         return true;
     case KEY_LOWERCASE_V:
     case KEY_UPPERCASE_V:

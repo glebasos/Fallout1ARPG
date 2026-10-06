@@ -49,6 +49,12 @@ void arpg_player_clear_target();
 Object* arpg_player_target();
 void arpg_player_special(Object* target, bool inPlace = false);
 Object* arpg_target_near_cursor();
+// poe/wasd (unless `rmb_toggles_mode=1`): the right button never switches the
+// cursor mode, F does.
+bool arpg_rmb_is_skill();
+// Right-click special at the enemy nearest the cursor, else the current
+// target; "No target" otherwise.
+void arpg_rmb_special(bool inPlace);
 int arpg_energy();
 int arpg_energy_max();
 

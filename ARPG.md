@@ -20,7 +20,8 @@ game to cycle them.
 | Left-click ground / hold left button | Run / keep running toward the cursor |
 | **Shift** + left-click / hold | Attack in place: never walks; snaps to the enemy nearest the cursor |
 | Left-click an item on the ground | Pick it up |
-| Right-click an enemy | Special: burst fire if the weapon has it, else aimed head shot (costs Energy) |
+| Right-click an enemy | Special: burst fire if the weapon has it, else aimed head shot (costs Energy). A near miss snaps to the enemy within 2 hexes of the cursor (else your current target); right-click never switches the cursor mode in poe/wasd |
+| **F** | Switch the cursor between move/attack and use/talk/look (Fallout's old right-click); right-click also switches back from use. `rmb_toggles_mode=1` restores the vanilla right-click |
 | **Q / E / T** | Skill bar: aimed shot at the head / legs / eyes of the enemy near the cursor (costs Energy) |
 | R | Reload |
 | **1–5** | Flasks: 1 (super) stimpak, 2 RadAway / Rad-X, 3 Buffout, 4 Mentats, 5 Psycho / Nuka-Cola |
@@ -118,7 +119,7 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
 - LIFE and ENERGY globes sit in the hi-res side areas (needs width ≥ 840, e.g. 1024x768 via `f1_res.ini`).
 - **Hotkey bar** (D2 belt + skill bar) above the XP bar: one keycap per key of the current control scheme.
   poe/wasd: flasks 1–5 (item art + count), Q/E/T aimed shots (a figure with the target body part), Space dodge,
-  RMB special (your weapon) and R reload (ammo icon + rounds loaded); classic: Q heal and R reload. Energy costs
+  RMB special (your weapon), R reload (ammo icon + rounds loaded) and F cursor mode (Move / Use); classic: Q heal and R reload. Energy costs
   are blue, red when you're short; a slot is checkered dark when it can't be used (no flasks, not enough
   energy, a weapon that can't aim, magazine full). The slot flashes when you press its key, hovering shows what
   it does, and clicking a flask drinks it. `hotkey_bar=0` hides it (the old text belt next to the life globe
@@ -126,7 +127,7 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
 - Kills drop caps, stimpaks, ammo for your weapon and gear scaled by the monster's XP. XP is awarded on kill.
 
 ## Config (`[arpg]` in fallout.cfg)
-`enabled`, `controls` (poe/wasd/classic), `dodge_cost` (20), `always_run`, `hold_to_move`, `damage_numbers`, `globes`, `loot_drops`, `loot_pct`,
+`enabled`, `controls` (poe/wasd/classic), `dodge_cost` (20), `always_run`, `hold_to_move`, `rmb_toggles_mode` (0), `rmb_toggles_mode` (0), `damage_numbers`, `globes`, `loot_drops`, `loot_pct`,
 `energy_regen_pct`, `enemy_attack_delay_pct` (130), `player_attack_delay_pct` (100), `stagger_pct`,
 `player_stagger_pct`, `stagger_immunity_ms`, `leash_distance`, `labels_always`, `loot_highlight` (1), `auto_caps`, `respawn` (1),
 `respawn_caps_pct` (10).
@@ -152,6 +153,7 @@ elevation), logging `SWEEP` lines with monster/pack/engagement counts; combine w
 `[arpg]autotest_god=1` keeps the bot above half life, `[arpg]autotest_saveload=N` saves to slot 10 after N
 seconds (with a knocked-out pack monster) and loads it back 3 s later.
 `[arpg]autotest_iframes=1` keeps dodge i-frames on. `[arpg]autotest_wasd=0..3` holds W/D/S/A (3 s on, 1 s off) through the real WASD movement path;
+`[arpg]autotest_rmb=1` presses F twice, then right-clicks ~1 hex off the nearest enemy every 3 s (logs the snap and mode).
 `[arpg]autotest_hover=1` walks the hotkey-bar tooltip across the slots (1.5 s each) for screenshots.
 `[arpg]dump_items=1` logs every item PID. Test keys are reset in fallout.cfg on exit, but other
 overrides like `controls` or `dodge_cost` are saved.

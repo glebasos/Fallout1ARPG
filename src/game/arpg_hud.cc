@@ -738,6 +738,7 @@ enum HotSlotKind {
     HOT_DODGE,
     HOT_SPECIAL,
     HOT_RELOAD,
+    HOT_MODE,
 };
 
 struct HotSlot {
@@ -776,6 +777,7 @@ struct HotState {
     int ammo;
     int maxAmmo;
     int ammoFid;
+    int cursorMode;
 };
 
 static void hotbar_destroy_tip()
@@ -824,6 +826,9 @@ static int hotbar_layout(int scheme)
         hotbar_add(HOT_DODGE, 0, KEY_SPACE, "Spc", 1);
         hotbar_add(HOT_SPECIAL, 0, -1, "RMB", 2);
         hotbar_add(HOT_RELOAD, 0, KEY_LOWERCASE_R, "R", 2);
+        if (arpg_rmb_is_skill()) {
+            hotbar_add(HOT_MODE, 0, KEY_LOWERCASE_F, "F", 2);
+        }
     }
 
     int x = 0;
@@ -857,6 +862,7 @@ static void hotbar_state(HotState* state)
     state->ammo = -1;
     state->maxAmmo = 0;
     state->ammoFid = -1;
+    state->cursorMode = gmouse_3d_get_mode();
     int hitMode;
     bool aiming;
     if (intface_get_attack(&hitMode, &aiming) != -1) {
@@ -1049,6 +1055,32 @@ static void hotbar_draw_slot(unsigned char* buf, const HotSlot* slot, const HotS
             caption = "Reload";
         }
         break;
+    case HOT_MODE:
+        if (state->cursorMode == GAME_MOUSE_MODE_MOVE) {
+            // A hex outline: the move/attack cursor.
+            int color = rgb5(20, 26, 12);
+            for (int d = 0; d <= 6; d++) {
+                buf[(cy - 7 + d / 2) * pitch + cx - 7 + d] = (unsigned char)color;
+                buf[(cy - 7 + d / 2) * pitch + cx + 7 - d] = (unsigned char)color;
+                buf[(cy + 1 - d / 2) * pitch + cx - 7 + d] = (unsigned char)color;
+                buf[(cy + 1 - d / 2) * pitch + cx + 7 - d] = (unsigned char)color;
+            }
+            caption = "Move";
+        } else {
+            // An arrow pointer: the use/talk/look cursor.
+            int color = rgb5(31, 27, 12);
+            for (int y = 0; y < 11; y++) {
+                for (int x = 0; x <= y * 2 / 3; x++) {
+                    buf[(cy - 11 + y) * pitch + cx - 4 + x] = (unsigned char)color;
+                }
+            }
+            for (int d = 0; d < 4; d++) {
+                buf[(cy - 1 + d) * pitch + cx - 1 + d / 2] = (unsigned char)color;
+                buf[(cy - 1 + d) * pitch + cx + d / 2] = (unsigned char)color;
+            }
+            caption = "Use";
+        }
+        break;
     }
 
     if (!usable) {
@@ -1120,7 +1152,7 @@ static void hotbar_tooltip_text(const HotSlot* slot, const HotState* state, char
         if (state->weaponFid == -1) {
             snprintf(out, size, "Right click: special attack (needs a weapon)");
         } else {
-            snprintf(out, size, "Right click: %s (%d energy)", state->burst ? "burst fire" : "aimed head shot", state->specialCost);
+            snprintf(out, size, "Right click: %s at the enemy nearest the cursor (%d energy)", state->burst ? "burst fire" : "aimed head shot", state->specialCost);
         }
         break;
     case HOT_RELOAD:
@@ -1128,6 +1160,13 @@ static void hotbar_tooltip_text(const HotSlot* slot, const HotState* state, char
             snprintf(out, size, "R: reload (%d/%d)", state->ammo, state->maxAmmo);
         } else {
             snprintf(out, size, "R: reload (this weapon takes no ammo)");
+        }
+        break;
+    case HOT_MODE:
+        if (state->cursorMode == GAME_MOUSE_MODE_MOVE) {
+            snprintf(out, size, "F: cursor is move/attack - F switches to use/talk/look");
+        } else {
+            snprintf(out, size, "F: cursor is use/talk/look - F or right click switches back");
         }
         break;
     default:
@@ -1240,7 +1279,7 @@ static void hud_update_hotbar(unsigned int now)
         // Clicking a flask (or the reload slot) sends its key, like D2's belt.
         for (int index = 0; index < hotbar_count; index++) {
             const HotSlot* slot = &hotbar_slots[index];
-            if (slot->kind == HOT_FLASK || slot->kind == HOT_RELOAD) {
+            if (slot->kind == HOT_FLASK || slot->kind == HOT_RELOAD || slot->kind == HOT_MODE) {
                 win_register_button(hotbar_window, slot->x, 0, SLOT_SIZE, SLOT_SIZE, -1, -1, -1, slot->key, NULL, NULL, NULL, 0);
             }
         }
@@ -1270,6 +1309,7 @@ static void hud_update_hotbar(unsigned int now)
     signature = signature * 31 + state.weaponFid;
     signature = signature * 31 + state.ammo;
     signature = signature * 31 + state.ammoFid;
+    signature = signature * 31 + state.cursorMode;
     unsigned int tipSignature = signature;
     signature = signature * 31 + (flashing ? hotbar_flash_key + 1 : 0);
 

@@ -3,12 +3,14 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <algorithm>
 #include <vector>
 
 #include "game/arpg.h"
+#include "game/art.h"
 #include "game/critter.h"
 #include "game/gconfig.h"
 #include "game/gmouse.h"
@@ -23,8 +25,11 @@
 #include "game/textobj.h"
 #include "game/tile.h"
 #include "plib/color/color.h"
+#include "plib/gnw/button.h"
 #include "plib/gnw/gnw.h"
+#include "plib/gnw/input.h"
 #include "plib/gnw/kb.h"
+#include "plib/gnw/mouse.h"
 #include "plib/gnw/svga.h"
 #include "plib/gnw/text.h"
 
@@ -198,6 +203,13 @@ static void hud_draw_belt(int win)
     int width = globe_width;
     int columnX = width / 2 + GLOBE_RADIUS + 4;
     if (columnX + 36 > width) {
+        return;
+    }
+
+    // The hotkey bar shows the same counts with item art.
+    bool hotkeyBar = true;
+    configGetBool(&game_config, "arpg", "hotkey_bar", &hotkeyBar);
+    if (hotkeyBar) {
         return;
     }
 
@@ -707,6 +719,597 @@ static void hud_update_bar(unsigned int now)
 }
 
 // ---------------------------------------------------------------------------
+// Hotkey bar (D2 belt + skill bar, PoE flask/skill slots): one keycap per
+// bound key above the XP bar. Flasks show their item art and count, skills
+// their energy cost; a slot greys out when it can't be used, flashes when its
+// key is pressed, explains itself on hover, and flask slots can be clicked.
+// ---------------------------------------------------------------------------
+
+#define SLOT_SIZE 34
+#define SLOT_GAP 2
+#define GROUP_GAP 10
+#define HOTBAR_MAX_SLOTS 12
+
+enum HotSlotKind {
+    HOT_FLASK,
+    HOT_AIM_HEAD,
+    HOT_AIM_LEGS,
+    HOT_AIM_EYES,
+    HOT_DODGE,
+    HOT_SPECIAL,
+    HOT_RELOAD,
+};
+
+struct HotSlot {
+    int kind;
+    int flask; // HOT_FLASK: belt index 0-4
+    int key; // lowercase key code, -1 = mouse
+    const char* keyName;
+    int group;
+    int x;
+};
+
+static int hotbar_window = -1;
+static int hotbar_width = 0;
+static int hotbar_screen[2] = { 0, 0 };
+static int hotbar_scheme = -1;
+static HotSlot hotbar_slots[HOTBAR_MAX_SLOTS];
+static int hotbar_count = 0;
+static unsigned int hotbar_signature = 0;
+static unsigned int hotbar_next_check = 0;
+static int hotbar_flash_key = -1;
+static unsigned int hotbar_flash_until = 0;
+static int tip_window = -1;
+static int tip_slot = -1;
+static unsigned int tip_signature = 0;
+
+// What each slot can do right now (filled by hotbar_state).
+struct HotState {
+    int counts[5];
+    int energy;
+    int aimCost;
+    int specialCost;
+    bool burst;
+    bool canAim;
+    int dodgeCost;
+    int weaponFid;
+    int ammo;
+    int maxAmmo;
+    int ammoFid;
+};
+
+static void hotbar_destroy_tip()
+{
+    if (tip_window != -1) {
+        win_delete(tip_window);
+        tip_window = -1;
+    }
+    tip_slot = -1;
+}
+
+static void hotbar_destroy()
+{
+    hotbar_destroy_tip();
+    if (hotbar_window != -1) {
+        win_delete(hotbar_window);
+        hotbar_window = -1;
+    }
+    hotbar_scheme = -1;
+    hotbar_signature = 0;
+    hotbar_next_check = 0;
+}
+
+static void hotbar_add(int kind, int flask, int key, const char* keyName, int group)
+{
+    if (hotbar_count < HOTBAR_MAX_SLOTS) {
+        hotbar_slots[hotbar_count++] = { kind, flask, key, keyName, group, 0 };
+    }
+}
+
+// Slot layout of a control scheme; returns the bar width.
+static int hotbar_layout(int scheme)
+{
+    hotbar_count = 0;
+    if (scheme == ARPG_CONTROLS_CLASSIC) {
+        hotbar_add(HOT_FLASK, 0, KEY_LOWERCASE_Q, "Q", 0);
+        hotbar_add(HOT_RELOAD, 0, KEY_LOWERCASE_R, "R", 1);
+    } else {
+        static const char* digits[] = { "1", "2", "3", "4", "5" };
+        for (int index = 0; index < 5; index++) {
+            hotbar_add(HOT_FLASK, index, KEY_1 + index, digits[index], 0);
+        }
+        hotbar_add(HOT_AIM_HEAD, 0, KEY_LOWERCASE_Q, "Q", 1);
+        hotbar_add(HOT_AIM_LEGS, 0, KEY_LOWERCASE_E, "E", 1);
+        hotbar_add(HOT_AIM_EYES, 0, KEY_LOWERCASE_T, "T", 1);
+        hotbar_add(HOT_DODGE, 0, KEY_SPACE, "Spc", 1);
+        hotbar_add(HOT_SPECIAL, 0, -1, "RMB", 2);
+        hotbar_add(HOT_RELOAD, 0, KEY_LOWERCASE_R, "R", 2);
+    }
+
+    int x = 0;
+    for (int index = 0; index < hotbar_count; index++) {
+        if (index > 0) {
+            x += hotbar_slots[index].group != hotbar_slots[index - 1].group ? GROUP_GAP : SLOT_GAP;
+        }
+        hotbar_slots[index].x = x;
+        x += SLOT_SIZE;
+    }
+    return x;
+}
+
+static void hotbar_state(HotState* state)
+{
+    for (int slot = 0; slot < 5; slot++) {
+        int count = 0;
+        for (int pid : belt_pids[slot]) {
+            if (pid != -1) {
+                count += inven_pid_quantity_carried(obj_dude, pid);
+            }
+        }
+        state->counts[slot] = count;
+    }
+
+    state->energy = arpg_energy();
+    state->dodgeCost = arpg_dodge_cost();
+    arpg_skill_costs(&state->aimCost, &state->specialCost, &state->burst, &state->canAim);
+
+    state->weaponFid = -1;
+    state->ammo = -1;
+    state->maxAmmo = 0;
+    state->ammoFid = -1;
+    int hitMode;
+    bool aiming;
+    if (intface_get_attack(&hitMode, &aiming) != -1) {
+        Object* weapon = item_hit_with(obj_dude, hitMode);
+        if (weapon != NULL) {
+            state->weaponFid = item_inv_fid(weapon);
+            state->maxAmmo = item_w_max_ammo(weapon);
+            if (state->maxAmmo > 0) {
+                state->ammo = item_w_curr_ammo(weapon);
+                Proto* proto;
+                int ammoPid = item_w_ammo_pid(weapon);
+                if (ammoPid != -1 && proto_ptr(ammoPid, &proto) != -1) {
+                    state->ammoFid = proto->item.inventoryFid;
+                }
+            }
+        }
+    }
+}
+
+// False when the slot can't be used right now (drawn dimmed).
+static bool hotbar_usable(const HotSlot* slot, const HotState* state)
+{
+    switch (slot->kind) {
+    case HOT_FLASK:
+        return state->counts[slot->flask] > 0;
+    case HOT_AIM_HEAD:
+    case HOT_AIM_LEGS:
+    case HOT_AIM_EYES:
+        return state->canAim && state->energy >= state->aimCost;
+    case HOT_DODGE:
+        return state->energy >= state->dodgeCost;
+    case HOT_SPECIAL:
+        return state->weaponFid != -1 && state->energy >= state->specialCost;
+    case HOT_RELOAD:
+        return state->maxAmmo > 0 && state->ammo < state->maxAmmo;
+    }
+    return true;
+}
+
+static int hotbar_cost(const HotSlot* slot, const HotState* state)
+{
+    switch (slot->kind) {
+    case HOT_AIM_HEAD:
+    case HOT_AIM_LEGS:
+    case HOT_AIM_EYES:
+        return state->canAim ? state->aimCost : 0;
+    case HOT_DODGE:
+        return state->dodgeCost;
+    case HOT_SPECIAL:
+        return state->weaponFid != -1 ? state->specialCost : 0;
+    }
+    return 0;
+}
+
+static void hotbar_text(unsigned char* buf, int pitch, int x, int y, const char* text, int color)
+{
+    text_to_buf(buf + (y + 1) * pitch + x + 1, text, pitch - x - 1, pitch, colorTable[0]);
+    text_to_buf(buf + y * pitch + x, text, pitch - x, pitch, color);
+}
+
+// A thin ring with cross hairs: the aimed-shot reticle.
+static void hotbar_reticle(unsigned char* buf, int pitch, int cx, int cy, int radius, int color)
+{
+    for (int y = -radius; y <= radius; y++) {
+        for (int x = -radius; x <= radius; x++) {
+            int d2 = x * x + y * y;
+            bool ring = d2 >= (radius - 1) * (radius - 1) && d2 <= radius * radius;
+            bool cross = (x == 0 || y == 0) && d2 >= (radius - 3) * (radius - 3) && d2 <= radius * radius;
+            if (ring || cross) {
+                buf[(cy + y) * pitch + cx + x] = (unsigned char)color;
+            }
+        }
+    }
+}
+
+// Aimed-shot icon: a little figure with a reticle on the targeted body part
+// (Fallout's called-shot screen in miniature).
+static void hotbar_figure(unsigned char* buf, int pitch, int cx, int top, int kind, bool usable)
+{
+    int body = usable ? rgb5(18, 17, 14) : rgb5(10, 10, 9);
+    auto plot = [&](int x, int y, int color) {
+        buf[(top + y) * pitch + cx + x] = (unsigned char)color;
+    };
+
+    // Head: a ring of radius 3 centred at (0, 4).
+    for (int y = -3; y <= 3; y++) {
+        for (int x = -3; x <= 3; x++) {
+            int d2 = x * x + y * y;
+            if (d2 >= 5 && d2 <= 10) {
+                plot(x, 4 + y, body);
+            }
+        }
+    }
+    // Torso and arms.
+    for (int y = 8; y <= 16; y++) {
+        plot(0, y, body);
+        plot(1, y, body);
+    }
+    for (int x = -5; x <= 6; x++) {
+        plot(x, 10, body);
+    }
+    // Legs.
+    for (int d = 0; d <= 7; d++) {
+        plot(-d / 2, 17 + d, body);
+        plot(1 + d / 2, 17 + d, body);
+    }
+
+    int hot = usable ? rgb5(31, 6, 4) : rgb5(14, 12, 10);
+    switch (kind) {
+    case HOT_AIM_HEAD:
+        hotbar_reticle(buf, pitch, cx, top + 4, 6, hot);
+        break;
+    case HOT_AIM_EYES:
+        plot(-1, 3, hot);
+        plot(1, 3, hot);
+        hotbar_reticle(buf, pitch, cx, top + 3, 4, hot);
+        break;
+    case HOT_AIM_LEGS:
+        hotbar_reticle(buf, pitch, cx, top + 21, 6, hot);
+        break;
+    }
+}
+
+static void hotbar_draw_slot(unsigned char* buf, const HotSlot* slot, const HotState* state, unsigned int now)
+{
+    int pitch = hotbar_width;
+    int left = slot->x;
+    bool usable = hotbar_usable(slot, state);
+    bool flash = hotbar_flash_key == slot->key && now < hotbar_flash_until;
+
+    // Bevelled keycap: light top/left edge, dark bottom/right, gold when pressed.
+    for (int y = 0; y < SLOT_SIZE; y++) {
+        for (int x = 0; x < SLOT_SIZE; x++) {
+            int color;
+            if (x == 0 || y == 0) {
+                color = flash ? rgb5(31, 27, 10) : rgb5(18, 15, 10);
+            } else if (x == SLOT_SIZE - 1 || y == SLOT_SIZE - 1) {
+                color = flash ? rgb5(24, 18, 4) : rgb5(6, 5, 3);
+            } else if (flash) {
+                color = rgb5(10, 8, 3);
+            } else {
+                color = y < SLOT_SIZE / 2 ? rgb5(4, 4, 3) : rgb5(3, 3, 2);
+            }
+            buf[y * pitch + left + x] = (unsigned char)color;
+        }
+    }
+
+    unsigned char* inner = buf + 2 * pitch + left + 2;
+    int innerSize = SLOT_SIZE - 4;
+    int cx = left + SLOT_SIZE / 2;
+    int cy = SLOT_SIZE / 2 + 1;
+    int dim = rgb5(12, 12, 10);
+    const char* caption = NULL;
+
+    switch (slot->kind) {
+    case HOT_FLASK: {
+        Proto* proto;
+        if (proto_ptr(belt_pids[slot->flask][0], &proto) != -1) {
+            scale_art(proto->item.inventoryFid, inner, innerSize, innerSize, pitch);
+        }
+        break;
+    }
+    case HOT_AIM_HEAD:
+    case HOT_AIM_LEGS:
+    case HOT_AIM_EYES:
+        hotbar_figure(buf, pitch, cx, 5, slot->kind, usable);
+        break;
+    case HOT_DODGE: {
+        // Two chevrons: >>
+        int color = usable ? rgb5(8, 26, 31) : dim;
+        for (int chevron = 0; chevron < 2; chevron++) {
+            int baseX = cx - 8 + chevron * 8;
+            for (int d = -6; d <= 6; d++) {
+                int x = baseX + 6 - abs(d);
+                buf[(cy + d) * pitch + x] = (unsigned char)color;
+                buf[(cy + d) * pitch + x + 1] = (unsigned char)color;
+            }
+        }
+        break;
+    }
+    case HOT_SPECIAL:
+        if (state->weaponFid != -1) {
+            scale_art(state->weaponFid, inner, innerSize, innerSize, pitch);
+        } else {
+            caption = "Fist";
+        }
+        break;
+    case HOT_RELOAD:
+        if (state->ammoFid != -1) {
+            scale_art(state->ammoFid, inner, innerSize, innerSize, pitch);
+        } else {
+            caption = "Reload";
+        }
+        break;
+    }
+
+    if (!usable) {
+        // Checker the slot dark, D2's "can't use" look.
+        for (int y = 1; y < SLOT_SIZE - 1; y++) {
+            for (int x = 1 + (y & 1); x < SLOT_SIZE - 1; x += 2) {
+                buf[y * pitch + left + x] = (unsigned char)colorTable[0];
+            }
+        }
+    }
+
+    int textHeight = text_height();
+    hotbar_text(buf, pitch, left + 3, 2, slot->keyName, flash ? rgb5(31, 31, 20) : rgb5(31, 27, 14));
+
+    char text[16];
+    text[0] = '\0';
+    int textColor = rgb5(31, 31, 31);
+    int cost = hotbar_cost(slot, state);
+    if (slot->kind == HOT_FLASK) {
+        snprintf(text, sizeof(text), "%d", state->counts[slot->flask]);
+        textColor = state->counts[slot->flask] > 0 ? rgb5(31, 31, 31) : rgb5(20, 8, 8);
+    } else if (slot->kind == HOT_RELOAD && state->maxAmmo > 0) {
+        snprintf(text, sizeof(text), "%d", state->ammo);
+        textColor = state->ammo > 0 ? rgb5(31, 31, 31) : rgb5(31, 8, 8);
+    } else if (cost > 0) {
+        // Energy cost, blue like the energy globe; red when short of it.
+        snprintf(text, sizeof(text), "%d", cost);
+        textColor = state->energy >= cost ? rgb5(12, 20, 31) : rgb5(31, 8, 8);
+    }
+    if (text[0] != '\0') {
+        hotbar_text(buf, pitch, left + SLOT_SIZE - 3 - text_width(text), SLOT_SIZE - textHeight - 2, text, textColor);
+    }
+
+    if (caption != NULL) {
+        int width = text_width(caption);
+        hotbar_text(buf, pitch, left + (SLOT_SIZE - width) / 2, SLOT_SIZE - textHeight - 2, caption, usable ? rgb5(26, 26, 22) : rgb5(14, 14, 12));
+    }
+}
+
+static void hotbar_tooltip_text(const HotSlot* slot, const HotState* state, char* out, size_t size)
+{
+    static const char* flaskNames[] = {
+        "Heal: Super Stimpak, then Stimpak",
+        "Radiation: RadAway, then Rad-X",
+        "Strength: Buffout",
+        "Mind: Mentats",
+        "Rage: Psycho, then Nuka-Cola",
+    };
+
+    switch (slot->kind) {
+    case HOT_FLASK:
+        snprintf(out, size, "%s (%d) - click or press %s", flaskNames[slot->flask], state->counts[slot->flask], slot->keyName);
+        break;
+    case HOT_AIM_HEAD:
+    case HOT_AIM_LEGS:
+    case HOT_AIM_EYES: {
+        const char* part = slot->kind == HOT_AIM_HEAD ? "head" : (slot->kind == HOT_AIM_LEGS ? "legs" : "eyes");
+        if (!state->canAim) {
+            snprintf(out, size, "%s: aimed shot at the %s - this weapon can't aim", slot->keyName, part);
+        } else {
+            snprintf(out, size, "%s: aimed shot at the %s of the enemy nearest the cursor (%d energy)", slot->keyName, part, state->aimCost);
+        }
+        break;
+    }
+    case HOT_DODGE:
+        snprintf(out, size, "Space: dodge 3 hexes, briefly untouchable (%d energy)", state->dodgeCost);
+        break;
+    case HOT_SPECIAL:
+        if (state->weaponFid == -1) {
+            snprintf(out, size, "Right click: special attack (needs a weapon)");
+        } else {
+            snprintf(out, size, "Right click: %s (%d energy)", state->burst ? "burst fire" : "aimed head shot", state->specialCost);
+        }
+        break;
+    case HOT_RELOAD:
+        if (state->maxAmmo > 0) {
+            snprintf(out, size, "R: reload (%d/%d)", state->ammo, state->maxAmmo);
+        } else {
+            snprintf(out, size, "R: reload (this weapon takes no ammo)");
+        }
+        break;
+    default:
+        out[0] = '\0';
+        break;
+    }
+}
+
+static int hotbar_hover_slot(int barX, int barY, unsigned int now)
+{
+    // Test hook: `autotest_hover=1` walks the tooltip across the slots.
+    int testHover = 0;
+    if (arpg_autotest() && config_get_value(&game_config, "arpg", "autotest_hover", &testHover) && testHover == 1) {
+        return (int)((now / 1500) % hotbar_count);
+    }
+
+    int mouseX;
+    int mouseY;
+    mouse_get_position(&mouseX, &mouseY);
+    if (mouseY < barY || mouseY >= barY + SLOT_SIZE) {
+        return -1;
+    }
+    for (int index = 0; index < hotbar_count; index++) {
+        int left = barX + hotbar_slots[index].x;
+        if (mouseX >= left && mouseX < left + SLOT_SIZE) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+static void hotbar_update_tip(int hover, int barX, int barY, const HotState* state, unsigned int signature)
+{
+    if (hover == -1) {
+        hotbar_destroy_tip();
+        return;
+    }
+    if (hover == tip_slot && signature == tip_signature && tip_window != -1) {
+        return;
+    }
+    hotbar_destroy_tip();
+
+    char text[128];
+    hotbar_tooltip_text(&hotbar_slots[hover], state, text, sizeof(text));
+    if (text[0] == '\0') {
+        return;
+    }
+
+    int oldFont = text_curr();
+    text_font(101);
+    int width = text_width(text) + 10;
+    int height = text_height() + 6;
+    int x = barX + hotbar_slots[hover].x + SLOT_SIZE / 2 - width / 2;
+    x = std::max(0, std::min(screenGetWidth() - width, x));
+    int y = barY - height - 3;
+    tip_window = win_add(x, y, width, height, colorTable[0], 0);
+    if (tip_window != -1) {
+        unsigned char* buf = win_get_buf(tip_window);
+        if (buf != NULL) {
+            int frame = rgb5(16, 13, 8);
+            for (int px = 0; px < width; px++) {
+                buf[px] = (unsigned char)frame;
+                buf[(height - 1) * width + px] = (unsigned char)frame;
+            }
+            for (int py = 0; py < height; py++) {
+                buf[py * width] = (unsigned char)frame;
+                buf[py * width + width - 1] = (unsigned char)frame;
+            }
+            text_to_buf(buf + 3 * width + 5, text, width - 6, width, rgb5(28, 28, 24));
+        }
+        win_draw(tip_window);
+        tip_slot = hover;
+        tip_signature = signature;
+    }
+    text_font(oldFont);
+}
+
+static void hud_update_hotbar(unsigned int now)
+{
+    bool enabled = true;
+    configGetBool(&game_config, "arpg", "hotkey_bar", &enabled);
+    if (!enabled || obj_dude == NULL || intface_is_hidden() || !intface_is_enabled()) {
+        if (hotbar_window != -1) {
+            hotbar_destroy();
+        }
+        return;
+    }
+
+    int scheme = arpg_controls();
+    int screenWidth = screenGetWidth();
+    int screenHeight = screenGetHeight();
+    if (hotbar_window != -1 && (scheme != hotbar_scheme || screenWidth != hotbar_screen[0] || screenHeight != hotbar_screen[1])) {
+        hotbar_destroy();
+    }
+
+    int barX = (screenWidth - hotbar_width) / 2;
+    int barY = screenHeight - HUD_HEIGHT - XP_BAR_HEIGHT - SLOT_SIZE - 2;
+
+    if (hotbar_window == -1) {
+        hotbar_width = hotbar_layout(scheme);
+        barX = (screenWidth - hotbar_width) / 2;
+        hotbar_window = win_add(barX, barY, hotbar_width, SLOT_SIZE, colorTable[0], 0);
+        if (hotbar_window == -1) {
+            return;
+        }
+        hotbar_scheme = scheme;
+        hotbar_screen[0] = screenWidth;
+        hotbar_screen[1] = screenHeight;
+
+        // Clicking a flask (or the reload slot) sends its key, like D2's belt.
+        for (int index = 0; index < hotbar_count; index++) {
+            const HotSlot* slot = &hotbar_slots[index];
+            if (slot->kind == HOT_FLASK || slot->kind == HOT_RELOAD) {
+                win_register_button(hotbar_window, slot->x, 0, SLOT_SIZE, SLOT_SIZE, -1, -1, -1, slot->key, NULL, NULL, NULL, 0);
+            }
+        }
+    }
+
+    if (now < hotbar_next_check) {
+        return;
+    }
+    hotbar_next_check = now + 100;
+
+    HotState state;
+    hotbar_state(&state);
+
+    int hover = hotbar_hover_slot(barX, barY, now);
+    bool flashing = now < hotbar_flash_until;
+
+    unsigned int signature = 17;
+    for (int count : state.counts) {
+        signature = signature * 31 + count;
+    }
+    for (int index = 0; index < hotbar_count; index++) {
+        signature = signature * 31 + (hotbar_usable(&hotbar_slots[index], &state) ? 1 : 2);
+    }
+    signature = signature * 31 + state.aimCost;
+    signature = signature * 31 + state.specialCost;
+    signature = signature * 31 + (state.burst ? 1 : 0) + (state.canAim ? 2 : 0);
+    signature = signature * 31 + state.weaponFid;
+    signature = signature * 31 + state.ammo;
+    signature = signature * 31 + state.ammoFid;
+    unsigned int tipSignature = signature;
+    signature = signature * 31 + (flashing ? hotbar_flash_key + 1 : 0);
+
+    if (signature != hotbar_signature) {
+        hotbar_signature = signature;
+        unsigned char* buf = win_get_buf(hotbar_window);
+        if (buf != NULL) {
+            memset(buf, colorTable[0], hotbar_width * SLOT_SIZE);
+            int oldFont = text_curr();
+            text_font(101);
+            for (int index = 0; index < hotbar_count; index++) {
+                hotbar_draw_slot(buf, &hotbar_slots[index], &state, now);
+            }
+            text_font(oldFont);
+            win_draw(hotbar_window);
+        }
+    }
+
+    hotbar_update_tip(hover, barX, barY, &state, tipSignature);
+}
+
+void arpg_hud_key_pressed(int key)
+{
+    if (key >= 'A' && key <= 'Z') {
+        key += 'a' - 'A';
+    }
+    for (int index = 0; index < hotbar_count; index++) {
+        if (hotbar_slots[index].key == key) {
+            hotbar_flash_key = key;
+            hotbar_flash_until = get_time() + 180;
+            // Redraw on the next tick.
+            hotbar_next_check = 0;
+            return;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Alt item labels
 // ---------------------------------------------------------------------------
 
@@ -898,6 +1501,7 @@ void arpg_hud_tick(unsigned int now)
     } else {
         hud_destroy_xp();
     }
+    hud_update_hotbar(now);
 
     static bool mapConfigRead = false;
     if (!mapConfigRead) {
@@ -913,6 +1517,7 @@ void arpg_hud_reset()
     bar_destroy();
     hud_destroy_xp();
     hud_destroy_map();
+    hotbar_destroy();
     map_walls_key = -1;
     for (int slot = 0; slot < 5; slot++) {
         last_belt[slot] = -1;

@@ -116,6 +116,13 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
   Fallout's permadeath.
 - Hit recovery like Diablo: only big hits (≥8% max HP for monsters, ≥15% for you), crits and knockdowns stagger, with a 2 s immunity.
 - LIFE and ENERGY globes sit in the hi-res side areas (needs width ≥ 840, e.g. 1024x768 via `f1_res.ini`).
+- **Hotkey bar** (D2 belt + skill bar) above the XP bar: one keycap per key of the current control scheme.
+  poe/wasd: flasks 1–5 (item art + count), Q/E/T aimed shots (a figure with the target body part), Space dodge,
+  RMB special (your weapon) and R reload (ammo icon + rounds loaded); classic: Q heal and R reload. Energy costs
+  are blue, red when you're short; a slot is checkered dark when it can't be used (no flasks, not enough
+  energy, a weapon that can't aim, magazine full). The slot flashes when you press its key, hovering shows what
+  it does, and clicking a flask drinks it. `hotkey_bar=0` hides it (the old text belt next to the life globe
+  comes back).
 - Kills drop caps, stimpaks, ammo for your weapon and gear scaled by the monster's XP. XP is awarded on kill.
 
 ## Config (`[arpg]` in fallout.cfg)
@@ -131,7 +138,7 @@ Animation speeds (percent): `attack_anim_pct` (200), `aim_anim_pct` (300), `enem
 
 Packs: `packs` (1), `pack_min` (2), `pack_max` (4), `pack_density_pct` (100), `champion_pct` (10),
 `unique_pct` (7), `pack_respawn_hours` (12), `max_spawns` per level (60), `aggro_radius` (9).
-HUD and extras: `minimap` (1), `shrines` (1), `shrine_scenery` (scenery proto number, 1 = Burning Metal Barrel),
+HUD and extras: `minimap` (1), `hotkey_bar` (1), `shrines` (1), `shrine_scenery` (scenery proto number, 1 = Burning Metal Barrel),
 `raider_packs` (1), `party_damage_taken_pct` (70: followers take 30% less damage, like D2 mercenaries).
 
 ## Test harness (developers)
@@ -145,6 +152,7 @@ elevation), logging `SWEEP` lines with monster/pack/engagement counts; combine w
 `[arpg]autotest_god=1` keeps the bot above half life, `[arpg]autotest_saveload=N` saves to slot 10 after N
 seconds (with a knocked-out pack monster) and loads it back 3 s later.
 `[arpg]autotest_iframes=1` keeps dodge i-frames on. `[arpg]autotest_wasd=0..3` holds W/D/S/A (3 s on, 1 s off) through the real WASD movement path;
+`[arpg]autotest_hover=1` walks the hotkey-bar tooltip across the slots (1.5 s each) for screenshots.
 `[arpg]dump_items=1` logs every item PID. Test keys are reset in fallout.cfg on exit, but other
 overrides like `controls` or `dodge_cost` are saved.
 Starts a new game with the combat premade, plays with a bot, writes `arpg.log`, screenshots, and a
@@ -168,7 +176,7 @@ homage uniques). The optional D2 item art is generated on the player's machine f
 ## Code map
 - `src/game/arpg.cc` – real-time combat, AI tick, energy/specials, loot, hold-to-move, control schemes
   (`arpg_handle_key`, WASD tick, dodge, flasks), autotest.
-- `src/game/arpg_hud.cc` – globes and Alt labels. `src/game/arpg_crash.cc` – autotest crash reporter.
+- `src/game/arpg_hud.cc` – globes, hotkey bar, target bar, XP bar, minimap and Alt labels. `src/game/arpg_crash.cc` – autotest crash reporter.
 - Hooks: `game_handle_input` → `arpg_handle_key` before Fallout's key switch, `combat()` / `combat_attack_this()` redirect, `main_game_loop` tick, `gmouse` click handling,
   `script_chk_critters` skips critter_p_proc for fighting critters, `obj_remove_all` resets state,
   `register_clear_force` in anim.cc.

@@ -58,6 +58,12 @@ void arpg_hud_reset();
 void arpg_hud_toggle_minimap();
 // True while Alt / Z loot highlights are shown (gates OUTLINE_TYPE_ARPG_LOOT).
 bool arpg_loot_highlights_visible();
+// Hotkey bar: flashes the slot bound to `key` (called for every game key).
+void arpg_hud_key_pressed(int key);
+int arpg_dodge_cost();
+// Energy costs of the Q/E/T aimed shots and the right-click special with the
+// active hit mode; `burst` = the special is a burst, `canAim` = Q/E/T work.
+bool arpg_skill_costs(int* aimCost, int* specialCost, bool* burst, bool* canAim);
 
 // Shrine boosts for the HUD: seconds left on boost `index` (0 when inactive,
 // -1 past the end) and its short name.

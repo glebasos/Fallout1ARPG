@@ -3484,6 +3484,43 @@ static void arpg_player_aimed(Object* target, int hitLocation)
     player_aim_location = hitLocation;
 }
 
+int arpg_dodge_cost()
+{
+    return dodge_cost;
+}
+
+// Mirrors the special-attack rules in the player tick: Q/E/T aim with the
+// active hit mode, right click bursts when the weapon can, else aims.
+bool arpg_skill_costs(int* aimCost, int* specialCost, bool* burst, bool* canAim)
+{
+    *aimCost = 0;
+    *specialCost = 0;
+    *burst = false;
+    *canAim = false;
+
+    int hitMode;
+    bool aiming;
+    if (obj_dude == NULL || intface_get_attack(&hitMode, &aiming) == -1) {
+        return false;
+    }
+
+    *canAim = item_w_called_shot(obj_dude, hitMode) != 0;
+    *aimCost = item_w_mp_cost(obj_dude, hitMode, true) * 10;
+
+    int specialMode = hitMode;
+    bool aimed = true;
+    if (hitMode == HIT_MODE_LEFT_WEAPON_PRIMARY || hitMode == HIT_MODE_RIGHT_WEAPON_PRIMARY) {
+        int secondaryAnim = item_w_anim(obj_dude, hitMode + 1);
+        if (secondaryAnim == ANIM_FIRE_BURST || secondaryAnim == ANIM_FIRE_CONTINUOUS) {
+            specialMode = hitMode + 1;
+            aimed = false;
+            *burst = true;
+        }
+    }
+    *specialCost = item_w_mp_cost(obj_dude, specialMode, aimed) * 10;
+    return true;
+}
+
 Object* arpg_player_target()
 {
     return player_target != NULL && arpg_alive(player_target) ? player_target : NULL;
@@ -5887,6 +5924,8 @@ bool arpg_handle_key(int key)
     if (arpg_test) {
         arpg_log("ARPG: key %d (controls=%d)\n", key, controls);
     }
+
+    arpg_hud_key_pressed(key);
 
     if (key == KEY_CTRL_W) {
         arpg_cycle_controls();

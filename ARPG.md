@@ -115,9 +115,10 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
   your own D2 MPQs and writes Fallout FRMs to `Fallout/DATA/art/inven` and `Fallout/DATA/art/items` (ground art
   is the same picture laid on the floor). The game uses them for the inventory, the hand slot and the ground;
   without them the base Fallout item's art is used. These files are never committed or shipped.
-- **Caps** and **flask consumables** (stimpaks, super stimpaks, RadAway, Rad-X, Buffout, Mentats, Psycho,
-  Nuka-Cola) are picked up just by walking past them (within 2 hexes). Consumables are skipped while you're
-  at your carry-weight limit. `[arpg] auto_caps=0` / `auto_consumables=0` turn either off.
+- **Caps**, **flask consumables** (stimpaks, super stimpaks, RadAway, Rad-X, Buffout, Mentats, Psycho,
+  Nuka-Cola) and **all ammo** are picked up just by walking past them (within 2 hexes). Consumables and ammo
+  are skipped while you're at your carry-weight limit. `[arpg] auto_caps=0` / `auto_consumables=0` /
+  `auto_ammo=0` turn each off.
 - **Death** works like Diablo II: a killing blow from a monster drops you for three seconds, then you rise again at
   the map entrance with full life, losing 10% of the caps you carry. Monsters forget you while you're down.
   (Deaths outside combat, such as poison or scripted deaths, still end the game.) Set `respawn=0` for
@@ -136,7 +137,7 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
 ## Config (`[arpg]` in fallout.cfg)
 `enabled`, `controls` (poe/wasd/classic), `dodge_cost` (20), `always_run`, `hold_to_move`, `rmb_toggles_mode` (0), `rmb_toggles_mode` (0), `damage_numbers`, `globes`, `loot_drops`, `loot_pct`,
 `energy_regen_pct`, `enemy_attack_delay_pct` (130), `player_attack_delay_pct` (100), `stagger_pct`,
-`player_stagger_pct`, `stagger_immunity_ms`, `leash_distance`, `labels_always`, `loot_highlight` (1), `enemy_outline` (1), `auto_caps`, `auto_consumables` (1), `respawn` (1),
+`player_stagger_pct`, `stagger_immunity_ms`, `leash_distance`, `labels_always`, `loot_highlight` (1), `enemy_outline` (1), `auto_caps`, `auto_consumables` (1), `auto_ammo` (1), `respawn` (1),
 `respawn_caps_pct` (10).
 
 Animation speeds (percent): `attack_anim_pct` (200), `aim_anim_pct` (300), `enemy_attack_anim_pct` (150),

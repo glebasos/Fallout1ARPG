@@ -264,6 +264,7 @@ static bool hold_to_move = true;
 static bool loot_drops = true;
 static bool auto_caps = true;
 static bool auto_consumables = true;
+static bool auto_ammo = true;
 
 // D2 death: a killing blow downs the player, who rises again at the map
 // entrance a few seconds later, poorer.
@@ -697,6 +698,7 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "loot_drops", &loot_drops);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "auto_caps", &auto_caps);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "auto_consumables", &auto_consumables);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "auto_ammo", &auto_ammo);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "respawn", &respawn_enabled);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "respawn_caps_pct", &respawn_caps_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "loot_pct", &loot_pct);
@@ -3999,12 +4001,12 @@ static bool arpg_is_auto_consumable(int pid)
     return false;
 }
 
-// D2 gold and potions: caps and flask consumables lying next to the player are
-// picked up just by walking past.
+// D2 gold and potions: caps, flask consumables and all ammo lying
+// next to the player are picked up just by walking past.
 static void arpg_caps_tick(unsigned int now)
 {
     static unsigned int next = 0;
-    if ((!auto_caps && !auto_consumables) || now < next) {
+    if ((!auto_caps && !auto_consumables && !auto_ammo) || now < next) {
         return;
     }
     next = now + 200;
@@ -4015,8 +4017,12 @@ static void arpg_caps_tick(unsigned int now)
 
     std::vector<Object*> found;
     for (Object* obj = obj_find_first_at(obj_dude->elevation); obj != NULL; obj = obj_find_next_at()) {
+        if (FID_TYPE(obj->fid) != OBJ_TYPE_ITEM) {
+            continue;
+        }
         bool wanted = (auto_caps && obj->pid == PROTO_ID_MONEY)
-            || (auto_consumables && arpg_is_auto_consumable(obj->pid));
+            || (auto_consumables && arpg_is_auto_consumable(obj->pid))
+            || (auto_ammo && item_get_type(obj) == ITEM_TYPE_AMMO);
         if (wanted && obj->owner == NULL && (obj->flags & OBJECT_HIDDEN) == 0
             && obj->tile != -1 && tile_dist(obj->tile, obj_dude->tile) <= 2) {
             found.push_back(obj);
@@ -4049,7 +4055,11 @@ static void arpg_caps_tick(unsigned int now)
         }
 
         char name[64];
-        snprintf(name, sizeof(name), "+%s", item_name(item));
+        if (item_get_type(item) == ITEM_TYPE_AMMO) {
+            snprintf(name, sizeof(name), "+%d %s", item_w_curr_ammo(item), item_name(item));
+        } else {
+            snprintf(name, sizeof(name), "+%s", item_name(item));
+        }
         int before = inven_pid_quantity_carried(obj_dude, pid);
         obj_pickup(obj_dude, item);
         if (inven_pid_quantity_carried(obj_dude, pid) > before) {
@@ -4694,8 +4704,8 @@ void arpg_tick()
         if (autotest_loot && !lootDone && now - autotest_start > 1500) {
             lootDone = true;
             // { pid, prefix, suffix }: normal, magic, rare, unique (Dust Devil, old
-            // encoding), stimpak, caps; then every unique numbered 16 and up.
-            static const int drops[][3] = { { 8, 0, 0 }, { 8, 1, 0 }, { 94, 2, 3 }, { 143, UNIQUE_MARKER, 15 }, { PROTO_ID_STIMPACK, 0, 0 }, { PROTO_ID_MONEY, 0, 0 } };
+            // encoding), stimpak, caps, 10mm JHP; then every unique numbered 16 and up.
+            static const int drops[][3] = { { 8, 0, 0 }, { 8, 1, 0 }, { 94, 2, 3 }, { 143, UNIQUE_MARKER, 15 }, { PROTO_ID_STIMPACK, 0, 0 }, { PROTO_ID_MONEY, 0, 0 }, { 29 /* 10mm JHP */, 0, 0 } };
             for (const auto& drop : drops) {
                 Object* item = arpg_drop_item(obj_dude, drop[0], drop[0] == PROTO_ID_MONEY ? 77 : 1);
                 if (item != NULL) {

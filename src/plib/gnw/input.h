@@ -47,6 +47,8 @@ IdleFunc* get_idle_func();
 int GNW95_input_init();
 void GNW95_input_exit();
 void GNW95_process_message();
+// ARPG hang watchdog: bumped on every message pump.
+extern volatile unsigned int gnw95_pump_count;
 void GNW95_clear_time_stamps();
 void GNW95_lost_focus();
 

@@ -376,6 +376,8 @@ static bool autotest_rmb = false;
 static int autotest_swap = 0;
 // Steps the map zoom every 3.5 s and checks the mouse mapping.
 static int autotest_zoom = 0;
+// Freezes the main thread for 12 s after N seconds (hang watchdog test).
+static int autotest_hang = 0;
 static bool autotest_swarm = false;
 static int autotest_magic = 0;
 static bool autotest_encounter = false;
@@ -651,7 +653,8 @@ void arpg_init()
     bool autotest = false;
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest", &autotest);
     arpg_test = autotest;
-    if (arpg_test) {
+    // Crash log + hang watchdog (arpg_crash.log, arpg_hang.log/.dmp).
+    if (arpg_on) {
         arpg_install_crash_handler();
     }
 
@@ -723,6 +726,7 @@ void arpg_init()
     // Autotest: swap weapons (B) every N ms (pair with autotest_wasd).
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_swap", &autotest_swap);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_zoom", &autotest_zoom);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_hang", &autotest_hang);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_swarm", &autotest_swarm);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_magic", &autotest_magic);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_encounter", &autotest_encounter);
@@ -745,7 +749,7 @@ void arpg_init()
 
     // Command-line test switches are merged into game_config, which CE saves
     // back to fallout.cfg on exit. Neutralize them so they don't stick.
-    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_swap", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_loot", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile", "autotest_sweep_encounters", "autotest_rmb", "autotest_hover", "autotest_zoom" };
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_swap", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_loot", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile", "autotest_sweep_encounters", "autotest_rmb", "autotest_hover", "autotest_zoom", "autotest_hang" };
     for (const char* key : testKeys) {
         char* value;
         if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
@@ -4686,6 +4690,17 @@ void arpg_tick()
             arpg_log("ARPG autotest: swap after anim=%d weapon=%d tile=%d moving=%d hand=%d\n",
                 FID_ANIM_TYPE(obj_dude->fid), (obj_dude->fid & 0xF000) >> 12, obj_dude->tile, anim_busy(obj_dude), intface_is_item_right_hand());
             nextSwap = now + autotest_swap;
+        }
+
+        if (autotest_hang > 0 && now - autotest_start > (unsigned int)autotest_hang * 1000) {
+            autotest_hang = 0;
+            arpg_log("ARPG autotest: freezing the main thread for 12 s\n");
+            unsigned int until = get_time() + 12000;
+            volatile unsigned int spins = 0;
+            while (get_time() < until) {
+                spins++;
+            }
+            arpg_log("ARPG autotest: freeze over\n");
         }
 
         // Zoom test: a real SDL wheel notch every 3.5 s (through

@@ -57,6 +57,9 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
 - **Monster packs**: every wild monster (rats, radscorpions, mantises, floaters, centaurs, deathclaws) leads a pack
   of 2-4 more. Packs attack on sight and the whole pack comes when one of them is shot. Packs aren't saved: they
   come back when you re-enter a map after 12 game hours, or when you load a game.
+- **Raider packs**: on random encounters, when people turn on you (raiders, bandits, mutant patrols) each one
+  calls in one or two armed copies, sometimes a champion pack or a named boss like "Dirty Tibbs of the Wastes"
+  with minions. Friendly encounters (caravans, traders) never grow. `raider_packs=0` turns this off.
 - **Champions** (blue name, faint glow): Champion, Fanatic (very fast), Berserker (red, hits hard, takes more),
   Ghostly (see-through, slow, drains energy), Possessed (lots of life). 3x XP, more loot.
 - **Uniques** (gold name like "Rustfang the Rabid", bright glow) with minions and two or three modifiers:

@@ -917,66 +917,55 @@ static void hotbar_text(unsigned char* buf, int pitch, int x, int y, const char*
     text_to_buf(buf + y * pitch + x, text, pitch - x, pitch, color);
 }
 
-// A thin ring with cross hairs: the aimed-shot reticle.
-static void hotbar_reticle(unsigned char* buf, int pitch, int cx, int cy, int radius, int color)
-{
-    for (int y = -radius; y <= radius; y++) {
-        for (int x = -radius; x <= radius; x++) {
-            int d2 = x * x + y * y;
-            bool ring = d2 >= (radius - 1) * (radius - 1) && d2 <= radius * radius;
-            bool cross = (x == 0 || y == 0) && d2 >= (radius - 3) * (radius - 3) && d2 <= radius * radius;
-            if (ring || cross) {
-                buf[(cy + y) * pitch + cx + x] = (unsigned char)color;
-            }
-        }
-    }
-}
+// Aimed-shot icon: a solid silhouette with the targeted body part in red
+// (Fallout's called-shot screen in miniature). H = head, E = eye band,
+// B = body/arms, L = legs.
+static const char* figure_rows[] = {
+    "    HHH    ",
+    "   HHHHH   ",
+    "   EEEEE   ",
+    "   HHHHH   ",
+    "    HHH    ",
+    "     B     ",
+    "  BBBBBBB  ",
+    " BBBBBBBBB ",
+    " BB BBB BB ",
+    " BB BBB BB ",
+    " BB BBB BB ",
+    " B  BBB  B ",
+    "    BBB    ",
+    "   LLLLL   ",
+    "   LL LL   ",
+    "   LL LL   ",
+    "   LL LL   ",
+    "   LL LL   ",
+    "   LL LL   ",
+    "  LLL LLL  ",
+};
 
-// Aimed-shot icon: a little figure with a reticle on the targeted body part
-// (Fallout's called-shot screen in miniature).
 static void hotbar_figure(unsigned char* buf, int pitch, int cx, int top, int kind, bool usable)
 {
-    int body = usable ? rgb5(18, 17, 14) : rgb5(10, 10, 9);
-    auto plot = [&](int x, int y, int color) {
-        buf[(top + y) * pitch + cx + x] = (unsigned char)color;
-    };
-
-    // Head: a ring of radius 3 centred at (0, 4).
-    for (int y = -3; y <= 3; y++) {
-        for (int x = -3; x <= 3; x++) {
-            int d2 = x * x + y * y;
-            if (d2 >= 5 && d2 <= 10) {
-                plot(x, 4 + y, body);
+    int body = usable ? rgb5(17, 16, 13) : rgb5(9, 9, 8);
+    int hot = usable ? rgb5(31, 5, 3) : rgb5(15, 9, 8);
+    int rows = (int)(sizeof(figure_rows) / sizeof(*figure_rows));
+    for (int y = 0; y < rows; y++) {
+        const char* row = figure_rows[y];
+        int width = (int)strlen(row);
+        for (int x = 0; x < width; x++) {
+            char part = row[x];
+            if (part == ' ') {
+                continue;
             }
+            bool target = (kind == HOT_AIM_HEAD && (part == 'H' || part == 'E'))
+                || (kind == HOT_AIM_EYES && part == 'E')
+                || (kind == HOT_AIM_LEGS && part == 'L');
+            int color = target ? hot : body;
+            // The eye band reads as a dark visor unless it is the target.
+            if (part == 'E' && !target) {
+                color = rgb5(6, 6, 5);
+            }
+            buf[(top + y) * pitch + cx - width / 2 + x] = (unsigned char)color;
         }
-    }
-    // Torso and arms.
-    for (int y = 8; y <= 16; y++) {
-        plot(0, y, body);
-        plot(1, y, body);
-    }
-    for (int x = -5; x <= 6; x++) {
-        plot(x, 10, body);
-    }
-    // Legs.
-    for (int d = 0; d <= 7; d++) {
-        plot(-d / 2, 17 + d, body);
-        plot(1 + d / 2, 17 + d, body);
-    }
-
-    int hot = usable ? rgb5(31, 6, 4) : rgb5(14, 12, 10);
-    switch (kind) {
-    case HOT_AIM_HEAD:
-        hotbar_reticle(buf, pitch, cx, top + 4, 6, hot);
-        break;
-    case HOT_AIM_EYES:
-        plot(-1, 3, hot);
-        plot(1, 3, hot);
-        hotbar_reticle(buf, pitch, cx, top + 3, 4, hot);
-        break;
-    case HOT_AIM_LEGS:
-        hotbar_reticle(buf, pitch, cx, top + 21, 6, hot);
-        break;
     }
 }
 
@@ -1022,7 +1011,8 @@ static void hotbar_draw_slot(unsigned char* buf, const HotSlot* slot, const HotS
     case HOT_AIM_HEAD:
     case HOT_AIM_LEGS:
     case HOT_AIM_EYES:
-        hotbar_figure(buf, pitch, cx, 5, slot->kind, usable);
+        // Left of centre and below the key letter, clear of the cost.
+        hotbar_figure(buf, pitch, left + 10, 10, slot->kind, usable);
         break;
     case HOT_DODGE: {
         // Two chevrons: >>

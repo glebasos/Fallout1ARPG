@@ -14,7 +14,8 @@ Three control schemes. Set `[arpg] controls=poe|wasd|classic` (default `poe`), o
 game to cycle them.
 
 **Mouse wheel zooms the map** in every scheme: 50% (see more) to 200% (closer), in steps. Only the map is
-scaled; the HUD, labels bar and cursor stay at screen resolution.
+scaled: the HUD (globes, hotkey bar, minimap) and the cursor stay sharp, while floating numbers and
+loot labels are drawn in the map and scale with it.
 
 ### `poe`: Path of Exile click-to-move (default)
 | Input | Action |

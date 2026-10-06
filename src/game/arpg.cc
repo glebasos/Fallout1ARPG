@@ -267,6 +267,10 @@ static bool inventory_drops = true;
 static bool auto_caps = true;
 static bool auto_consumables = true;
 static bool auto_ammo = true;
+// Camera locked on the player (arpg_camera_tick); with camera_look the
+// cursor pans it further while the player stands still.
+static bool camera_center = false;
+static bool camera_look = true;
 
 // D2 death: a killing blow downs the player, who rises again at the map
 // entrance a few seconds later, poorer.
@@ -388,6 +392,8 @@ static int autotest_options = 0;
 static bool autotest_options_script = false;
 // Freezes the main thread for 12 s after N seconds (hang watchdog test).
 static int autotest_hang = 0;
+// Autotest: park the cursor near the right edge of the view (camera_look).
+static int autotest_camera_look = 0;
 static bool autotest_swarm = false;
 static int autotest_magic = 0;
 static bool autotest_encounter = false;
@@ -464,6 +470,7 @@ static unsigned int player_unreachable_until = 0;
 static void arpg_drop_loot(Object* victim, int rolls, bool guaranteedGear);
 static void arpg_react(Attack* attack, Object* victim, int damage, int flags, int knockback);
 static void arpg_wasd_tick(unsigned int now);
+static void arpg_camera_tick(unsigned int now);
 static void arpg_dodge();
 static void arpg_player_aimed(Object* target, int hitLocation);
 
@@ -557,6 +564,11 @@ bool arpg_enabled()
     return arpg_on;
 }
 
+bool arpg_camera_locked()
+{
+    return arpg_enabled() && camera_center;
+}
+
 bool arpg_always_run()
 {
     return arpg_on && always_run;
@@ -592,6 +604,8 @@ bool* arpg_option_flag(const char* key)
         { "auto_caps", &auto_caps },
         { "auto_consumables", &auto_consumables },
         { "auto_ammo", &auto_ammo },
+        { "camera_center", &camera_center },
+        { "camera_look", &camera_look },
         { "respawn", &respawn_enabled },
         { "packs", &packs_enabled },
         { "shrines", &shrines_enabled },
@@ -752,6 +766,8 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "auto_caps", &auto_caps);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "auto_consumables", &auto_consumables);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "auto_ammo", &auto_ammo);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "camera_center", &camera_center);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "camera_look", &camera_look);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "respawn", &respawn_enabled);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "respawn_caps_pct", &respawn_caps_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "loot_pct", &loot_pct);
@@ -799,6 +815,7 @@ void arpg_init()
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_zoom", &autotest_zoom);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_options", &autotest_options);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_hang", &autotest_hang);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_camera_look", &autotest_camera_look);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_swarm", &autotest_swarm);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_magic", &autotest_magic);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_encounter", &autotest_encounter);
@@ -821,7 +838,7 @@ void arpg_init()
 
     // Command-line test switches are merged into game_config, which CE saves
     // back to fallout.cfg on exit. Neutralize them so they don't stick.
-    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_swap", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_loot", "autotest_manual_caps", "autotest_corpse_items", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile", "autotest_sweep_encounters", "autotest_rmb", "autotest_hover", "autotest_zoom", "autotest_hang", "autotest_options" };
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_swap", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_loot", "autotest_manual_caps", "autotest_corpse_items", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile", "autotest_sweep_encounters", "autotest_rmb", "autotest_hover", "autotest_zoom", "autotest_hang", "autotest_options", "autotest_camera_look" };
     for (const char* key : testKeys) {
         char* value;
         if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
@@ -5443,6 +5460,7 @@ void arpg_tick()
         arpg_caps_tick(now);
         arpg_shrine_tick(now);
         arpg_gear_tick(now);
+        arpg_camera_tick(now);
         arpg_wasd_tick(now);
         arpg_hold_tick(now);
         arpg_player_tick(now);
@@ -5879,6 +5897,105 @@ static void arpg_camera_follow()
     }
 }
 
+// Camera locked on the player (camera_center). With camera_look the cursor
+// pulls the view toward it while the player stands still (up to a quarter
+// view past the player); as soon as the player moves it eases back onto them.
+static void arpg_camera_tick(unsigned int now)
+{
+    static unsigned int lastStep = 0;
+    static unsigned int movedAt = 0;
+    static int lastDudeTile = -1;
+
+    if (!camera_center) {
+        lastDudeTile = -1;
+        return;
+    }
+    if (now - lastStep < 30) {
+        return;
+    }
+    lastStep = now;
+
+    int elevation = obj_dude->elevation;
+    int x;
+    int y;
+    if (tile_coord(obj_dude->tile, &x, &y, elevation) == -1) {
+        return;
+    }
+
+    int anim = FID_ANIM_TYPE(obj_dude->fid);
+    if (obj_dude->tile != lastDudeTile || anim == ANIM_RUNNING || anim == ANIM_WALK || slide_active) {
+        lastDudeTile = obj_dude->tile;
+        movedAt = now;
+    }
+    bool moving = now - movedAt < 300;
+
+    int width;
+    int height;
+    arpg_zoom_view_size(&width, &height);
+
+    // Where the view's center should be, in tile_coord space.
+    int targetX = x + 16;
+    int targetY = y + 8;
+    if (camera_look && !moving) {
+        if (arpg_test && autotest_camera_look != 0) {
+            mouse_set_position(scr_size.lrx - 20, (scr_size.uly + scr_size.lry) / 3);
+        }
+        int mouseX;
+        int mouseY;
+        arpg_mouse_world_position(&mouseX, &mouseY);
+        int offX = std::max(-width / 2, std::min(mouseX - width / 2, width / 2));
+        int offY = std::max(-height / 2, std::min(mouseY - height / 2, height / 2));
+        // A dead zone in the middle, then two thirds of the rest.
+        int deadX = width / 8;
+        int deadY = height / 8;
+        offX = offX > deadX ? offX - deadX : (offX < -deadX ? offX + deadX : 0);
+        offY = offY > deadY ? offY - deadY : (offY < -deadY ? offY + deadY : 0);
+        targetX += offX * 2 / 3;
+        targetY += offY * 2 / 3;
+    }
+
+    // Ease toward the target: a third of the way per step, snapping once
+    // close (a running player stays in the snap range).
+    int centerX;
+    int centerY;
+    if (tile_coord(tile_center_tile, &centerX, &centerY, elevation) == -1) {
+        return;
+    }
+    centerX += 16;
+    centerY += 8;
+    double distX = targetX - centerX;
+    double distY = targetY - centerY;
+    double dist = sqrt(distX * distX + distY * distY);
+    int tile;
+    if (dist < 24.0) {
+        tile = tile_num(targetX, targetY, elevation);
+    } else {
+        double step = std::max(24.0, dist / 3.0) / dist;
+        tile = tile_num(centerX + (int)lround(distX * step), centerY + (int)lround(distY * step), elevation);
+        if (tile == tile_center_tile) {
+            tile = tile_num(targetX, targetY, elevation);
+        }
+    }
+    if (arpg_test) {
+        static unsigned int lastLog = 0;
+        if (now - lastLog > 1000) {
+            lastLog = now;
+            arpg_log("ARPG autotest: camera dude off %d,%d target off %d,%d moving=%d view %dx%d\n",
+                x + 16 - centerX, y + 8 - centerY, targetX - centerX, targetY - centerY, moving, width, height);
+        }
+    }
+    if (tile == -1 || tile == tile_center_tile) {
+        return;
+    }
+
+    gmouse_3d_off();
+    if (tile_set_center(tile, TILE_SET_CENTER_REFRESH_WINDOW) == -1 && arpg_zoom_pct() > 100 && !(camera_look && !moving)) {
+        // Fallout's scroll blockers keep a 640x480 view inside the map; a
+        // zoomed-in view is smaller, so still center on the player there.
+        tile_set_center(tile, TILE_SET_CENTER_FLAG_IGNORE_SCROLL_RESTRICTIONS | TILE_SET_CENTER_REFRESH_WINDOW);
+    }
+}
+
 // The player's measured run speed: hexes and milliseconds spent in the run
 // animation (arpg_measure_run), halved now and then so it follows changes.
 static double run_measured_hexes = 0.0;
@@ -6231,7 +6348,9 @@ static void arpg_wasd_tick(unsigned int now)
         return;
     }
 
-    arpg_camera_follow();
+    if (!camera_center) {
+        arpg_camera_follow();
+    }
     arpg_measure_run(now);
 
     int dx;

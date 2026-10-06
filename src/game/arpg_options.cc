@@ -68,6 +68,8 @@ static const ArpgOption column_left[] = {
     { OPT_FLAG, "damage_numbers", "Damage numbers", "Floating damage, miss and heal numbers.", true },
     { OPT_FLAG, "enemy_outline", "Enemy outlines (X)", "Red outline around every living enemy.", true },
     { OPT_ZOOM_SMOOTH, "zoom_smooth", "Smooth zoom", "Filtered scaling when the map is zoomed with the mouse wheel. Off = sharp pixels.", true },
+    { OPT_FLAG, "camera_center", "Camera locked on player", "The view stays centered on the player (no screen-edge scrolling).", false },
+    { OPT_FLAG, "camera_look", "  Cursor pans camera", "With the camera locked: standing still, the cursor pulls the view toward it; moving snaps it back to the player.", true },
 };
 
 static const ArpgOption column_right[] = {

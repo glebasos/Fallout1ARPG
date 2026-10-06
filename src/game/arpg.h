@@ -16,6 +16,9 @@ void arpg_init();
 void arpg_reset();
 bool arpg_enabled();
 bool arpg_always_run();
+// Camera stays centered on the player (`camera_center`); screen-edge
+// scrolling is off then.
+bool arpg_camera_locked();
 bool arpg_labels_always();
 
 // ARPG options page (arpg_options.cc), opened from the Options (ESC) menu.

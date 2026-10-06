@@ -2357,7 +2357,7 @@ static int gmouse_3d_move_to(int x, int y, int elevation, Rect* a4)
 // 0x445EB8
 static int gmouse_check_scrolling(int x, int y, int cursor)
 {
-    if (!gmouse_scrolling_enabled) {
+    if (!gmouse_scrolling_enabled || arpg_camera_locked()) {
         return -1;
     }
 

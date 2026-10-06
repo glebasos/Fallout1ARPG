@@ -162,6 +162,9 @@ Packs: `packs` (1), `pack_min` (2), `pack_max` (4), `pack_density_pct` (100), `c
 HUD and extras: `minimap` (1), `hotkey_bar` (1), `shrines` (1), `shrine_scenery` (scenery proto number, 1 = Burning Metal Barrel),
 `raider_packs` (1), `party_damage_taken_pct` (70: followers take 30% less damage, like D2 mercenaries).
 Zoom: `zoom` (100, start zoom in percent, 50-200), `zoom_smooth` (1; 0 = nearest-neighbour pixels).
+Camera: `camera_center` (0; 1 = the view stays centered on the player, no screen-edge scrolling; ARPG OPTIONS ->
+Camera locked on player), `camera_look` (1; with the camera locked, standing still lets the cursor pull the view up to
+a quarter screen toward it; moving eases it back onto the player).
 
 ## Test harness (developers)
 ```
@@ -179,6 +182,8 @@ seconds (with a knocked-out pack monster) and loads it back 3 s later.
 player each time and logs whether it maps back to the player's tile (`OK`/`MISMATCH`).
 `[arpg]autotest_options=N` opens ESC → ARPG OPTIONS after N s with real SDL keys, presses a few rows and logs
 the values (`options ... now ...`), with screenshots of both pages.
+`[arpg]autotest_camera_look=1` parks the cursor near the right edge (camera_look); the camera logs
+`camera dude off X,Y target off X,Y moving=N` once a second while `camera_center` is on.
 `[arpg]autotest_hover=1` walks the hotkey-bar tooltip across the slots (1.5 s each) for screenshots.
 `[arpg]dump_items=1` logs every item PID. Test keys are reset in fallout.cfg on exit, but other
 overrides like `controls` or `dodge_cost` are saved.

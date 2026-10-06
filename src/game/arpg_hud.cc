@@ -579,16 +579,16 @@ static void hud_update_xp()
 #define BAR_WIDTH 340
 #define BAR_HEIGHT 36
 
-static int bar_window = -1;
+static int target_window = -1;
 static Object* bar_critter = NULL;
 static int bar_last_hp = -1;
 static unsigned int bar_next_draw = 0;
 
 static void bar_destroy()
 {
-    if (bar_window != -1) {
-        win_delete(bar_window);
-        bar_window = -1;
+    if (target_window != -1) {
+        win_delete(target_window);
+        target_window = -1;
     }
     bar_critter = NULL;
     bar_last_hp = -1;
@@ -623,7 +623,7 @@ static void bar_text(unsigned char* buf, const char* text, int y, int color)
 
 static void bar_draw(Object* critter)
 {
-    unsigned char* buf = win_get_buf(bar_window);
+    unsigned char* buf = win_get_buf(target_window);
     if (buf == NULL) {
         return;
     }
@@ -683,7 +683,7 @@ static void bar_draw(Object* critter)
     }
     text_font(oldFont);
 
-    win_draw(bar_window);
+    win_draw(target_window);
 }
 
 static void hud_update_bar(unsigned int now)
@@ -694,16 +694,16 @@ static void hud_update_bar(unsigned int now)
     }
 
     if (critter == NULL) {
-        if (bar_window != -1) {
+        if (target_window != -1) {
             bar_destroy();
         }
         return;
     }
 
-    if (bar_window == -1) {
+    if (target_window == -1) {
         int x = (screenGetWidth() - BAR_WIDTH) / 2;
-        bar_window = win_add(x, 6, BAR_WIDTH, BAR_HEIGHT, colorTable[0], 0);
-        if (bar_window == -1) {
+        target_window = win_add(x, 6, BAR_WIDTH, BAR_HEIGHT, colorTable[0], 0);
+        if (target_window == -1) {
             return;
         }
         bar_critter = NULL;
@@ -753,6 +753,7 @@ struct HotSlot {
 static int hotbar_window = -1;
 static int hotbar_width = 0;
 static int hotbar_screen[2] = { 0, 0 };
+static int hotbar_y = 0;
 static int hotbar_scheme = -1;
 static HotSlot hotbar_slots[HOTBAR_MAX_SLOTS];
 static int hotbar_count = 0;
@@ -1258,12 +1259,20 @@ static void hud_update_hotbar(unsigned int now)
     int scheme = arpg_controls();
     int screenWidth = screenGetWidth();
     int screenHeight = screenGetHeight();
-    if (hotbar_window != -1 && (scheme != hotbar_scheme || screenWidth != hotbar_screen[0] || screenHeight != hotbar_screen[1])) {
+
+    int barY = screenHeight - HUD_HEIGHT - XP_BAR_HEIGHT - SLOT_SIZE - 2;
+    // Fallout's SNEAK / LEVEL / ADDICT indicator boxes sit on top of the
+    // interface bar's left side (intface.cc bar_window): lift the bar above them.
+    Rect indicators;
+    if (bar_window != -1 && win_get_rect(bar_window, &indicators) == 0) {
+        barY = std::min(barY, indicators.uly - SLOT_SIZE - 2);
+    }
+
+    if (hotbar_window != -1 && (scheme != hotbar_scheme || screenWidth != hotbar_screen[0] || screenHeight != hotbar_screen[1] || barY != hotbar_y)) {
         hotbar_destroy();
     }
 
     int barX = (screenWidth - hotbar_width) / 2;
-    int barY = screenHeight - HUD_HEIGHT - XP_BAR_HEIGHT - SLOT_SIZE - 2;
 
     if (hotbar_window == -1) {
         hotbar_width = hotbar_layout(scheme);
@@ -1275,6 +1284,7 @@ static void hud_update_hotbar(unsigned int now)
         hotbar_scheme = scheme;
         hotbar_screen[0] = screenWidth;
         hotbar_screen[1] = screenHeight;
+        hotbar_y = barY;
 
         // Clicking a flask (or the reload slot) sends its key, like D2's belt.
         for (int index = 0; index < hotbar_count; index++) {

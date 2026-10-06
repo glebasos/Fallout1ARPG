@@ -165,7 +165,9 @@ HUD and extras: `minimap` (1), `hotkey_bar` (1), `shrines` (1), `shrine_scenery`
 Zoom: `zoom` (100, start zoom in percent, 50-200), `zoom_smooth` (1; 0 = nearest-neighbour pixels).
 Camera: `camera_center` (0; 1 = the view stays centered on the player, no screen-edge scrolling; ARPG OPTIONS ->
 Camera locked on player), `camera_look` (1; with the camera locked, standing still lets the cursor pull the view up to
-a quarter screen toward it; moving eases it back onto the player).
+a quarter screen toward it; moving eases it back onto the player), `camera_smooth` (150; how many ms the locked
+camera takes to catch up: it glides after the player instead of copying every animation step, and attacks or hits
+don't move it; 0 = exact lock).
 
 ## Test harness (developers)
 ```
@@ -184,7 +186,8 @@ player each time and logs whether it maps back to the player's tile (`OK`/`MISMA
 `[arpg]autotest_options=N` opens ESC → ARPG OPTIONS after N s with real SDL keys, presses a few rows and logs
 the values (`options ... now ...`), with screenshots of both pages.
 `[arpg]autotest_camera_look=1` parks the cursor near the right edge (camera_look); the camera logs
-`camera dude off X,Y target off X,Y moving=N` once a second while `camera_center` is on.
+`camera dude off X,Y look X,Y fine X,Y moving=N` and `camera motion px N reversals N` (pixels the view really
+moved and direction flips, per second) while `camera_center` is on.
 `[arpg]autotest_cursor=1` (with `-NoBot`) parks the mouse on floor, on the nearest enemy (pulled next to the
 player), on floor in the use mode and back (F), then on a dropped 10mm pistol, logging `cursor step N mode M variant V` (1 move, 2 loot,
 3 attack, 0 gmouse's own cursor) with a screenshot each.

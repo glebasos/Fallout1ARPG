@@ -272,6 +272,8 @@ static bool auto_ammo = true;
 // cursor pans it further while the player stands still.
 static bool camera_center = false;
 static bool camera_look = true;
+// Smoothing time (ms) of the locked camera's spring; 0 = exact lock.
+static int camera_smooth = 150;
 
 // D2 death: a killing blow downs the player, who rises again at the map
 // entrance a few seconds later, poorer.
@@ -777,6 +779,7 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "auto_ammo", &auto_ammo);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "camera_center", &camera_center);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "camera_look", &camera_look);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "camera_smooth", &camera_smooth);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "respawn", &respawn_enabled);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "respawn_caps_pct", &respawn_caps_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "loot_pct", &loot_pct);
@@ -5978,22 +5981,61 @@ static void arpg_camera_follow()
     }
 }
 
+// Autotest: how far the view really moved each second and how often it
+// turned back (shake).
+static void arpg_camera_log_motion(unsigned int now, int dx, int dy, int anim)
+{
+    static int prevX = 0;
+    static int prevY = 0;
+    static int reversals = 0;
+    static int pixels = 0;
+    static unsigned int lastLog = 0;
+    if (!arpg_test) {
+        return;
+    }
+    if ((dx > 0 && prevX < 0) || (dx < 0 && prevX > 0)) {
+        reversals++;
+    }
+    if ((dy > 0 && prevY < 0) || (dy < 0 && prevY > 0)) {
+        reversals++;
+    }
+    if (dx != 0) {
+        prevX = dx;
+    }
+    if (dy != 0) {
+        prevY = dy;
+    }
+    pixels += abs(dx) + abs(dy);
+    if (now - lastLog > 1000) {
+        lastLog = now;
+        arpg_log("ARPG autotest: camera motion px %d reversals %d anim %d\n", pixels, reversals, anim);
+        pixels = 0;
+        reversals = 0;
+    }
+}
+
 // Camera locked on the player (camera_center). The view follows the player's
-// exact pixel position (center tile + tile_set_fine_offset), not just their
-// hex, so the world doesn't jump a hex at a time under a smoothly moving
-// sprite. With camera_look the cursor pulls the view toward it while the
-// player stands still (up to a quarter view past the player); as soon as the
-// player moves it eases back onto them.
+// pixel position (center tile + tile_set_fine_offset), not just their hex, so
+// the world doesn't jump a hex at a time under a moving sprite. A critically
+// damped spring (camera_smooth ms) turns the run frames' small steps into a
+// steady glide; only walk/run/slide frame offsets count, so attack and hit
+// frames don't shake the view. With camera_look the cursor pulls the view
+// toward it while the player stands still (up to a quarter view past the
+// player); as soon as the player moves it glides back onto them.
 static void arpg_camera_tick(unsigned int now)
 {
     static unsigned int lastTick = 0;
     static unsigned int movedAt = 0;
     static int lastDudeTile = -1;
+    static int lastElevation = -1;
     static int fineX = 0;
     static int fineY = 0;
-    // Current cursor pull, eased toward the wanted one.
-    static double lookX = 0.0;
-    static double lookY = 0.0;
+    // Spring state: velocity (px/ms) and the sub-pixel part of the camera
+    // position (the view itself only moves in whole pixels).
+    static double velX = 0.0;
+    static double velY = 0.0;
+    static double fracX = 0.0;
+    static double fracY = 0.0;
 
     if (!camera_center) {
         if (fineX != 0 || fineY != 0) {
@@ -6004,8 +6046,6 @@ static void arpg_camera_tick(unsigned int now)
         }
         lastDudeTile = -1;
         lastTick = 0;
-        lookX = 0.0;
-        lookY = 0.0;
         return;
     }
 
@@ -6019,8 +6059,12 @@ static void arpg_camera_tick(unsigned int now)
         return;
     }
 
+    bool snap = lastDudeTile == -1 || elevation != lastElevation || camera_smooth <= 0;
+    lastElevation = elevation;
+
     int anim = FID_ANIM_TYPE(obj_dude->fid);
-    if (obj_dude->tile != lastDudeTile || anim == ANIM_RUNNING || anim == ANIM_WALK || slide_active) {
+    bool walking = anim == ANIM_RUNNING || anim == ANIM_WALK || slide_active;
+    if (obj_dude->tile != lastDudeTile || walking) {
         lastDudeTile = obj_dude->tile;
         movedAt = now;
     }
@@ -6031,8 +6075,8 @@ static void arpg_camera_tick(unsigned int now)
     int height;
     arpg_zoom_view_size(&width, &height);
 
-    double wantX = 0.0;
-    double wantY = 0.0;
+    int lookX = 0;
+    int lookY = 0;
     if (looking) {
         if (arpg_test && autotest_camera_look != 0) {
             mouse_set_position(scr_size.lrx - 20, (scr_size.uly + scr_size.lry) / 3);
@@ -6047,43 +6091,88 @@ static void arpg_camera_tick(unsigned int now)
         int deadY = height / 8;
         offX = offX > deadX ? offX - deadX : (offX < -deadX ? offX + deadX : 0);
         offY = offY > deadY ? offY - deadY : (offY < -deadY ? offY + deadY : 0);
-        wantX = offX * 2.0 / 3.0;
-        wantY = offY * 2.0 / 3.0;
+        lookX = offX * 2 / 3;
+        lookY = offY * 2 / 3;
     }
 
-    double ease = 1.0 - exp(-(double)dt / 120.0);
-    lookX += (wantX - lookX) * ease;
-    lookY += (wantY - lookY) * ease;
-    if (fabs(wantX - lookX) < 0.5 && fabs(wantY - lookY) < 0.5) {
-        lookX = wantX;
-        lookY = wantY;
-    }
-
-    // The pixel to put at the middle of the view: the player's feet (hex
-    // center plus the in-hex offset the walk/run frames have built up) plus
-    // the cursor pull.
-    int targetX = x + 16 + obj_dude->x + (int)lround(lookX);
-    int targetY = y + 8 + obj_dude->y + (int)lround(lookY);
+    // The pixel the camera heads for: the player's feet (hex center, plus the
+    // in-hex offset walk/run frames have built up) plus the cursor pull.
+    // Other animations (attacks, hits, reloads) offset the sprite too, but
+    // the player hasn't really moved, so those are left out.
+    int feetX = x + 16 + (walking ? obj_dude->x : 0);
+    int feetY = y + 8 + (walking ? obj_dude->y : 0);
+    int targetX = feetX + lookX;
+    int targetY = feetY + lookY;
     int middleX = width / 2;
     int middleY = height / 2;
+
+    // Distance from the exact camera position to the target.
+    double errX = targetX - middleX - fracX;
+    double errY = targetY - middleY - fracY;
+    if (abs(targetX - middleX) > width / 2 || abs(targetY - middleY) > height / 2) {
+        snap = true;
+    }
+
+    double moveX;
+    double moveY;
+    if (snap) {
+        moveX = errX;
+        moveY = errY;
+        velX = 0.0;
+        velY = 0.0;
+    } else {
+        // Critically damped spring (Game Programming Gems 4, "Critically
+        // Damped Ease-In/Ease-Out Smoothing").
+        double omega = 2.0 / camera_smooth;
+        double k = omega * dt;
+        double decay = 1.0 / (1.0 + k + 0.48 * k * k + 0.235 * k * k * k);
+        double tempX = (velX - omega * errX) * dt;
+        double tempY = (velY - omega * errY) * dt;
+        velX = (velX - omega * tempX) * decay;
+        velY = (velY - omega * tempY) * decay;
+        moveX = errX + (tempX - errX) * decay;
+        moveY = errY + (tempY - errY) * decay;
+        // Settled: park exactly on the target.
+        if (fabs(errX - moveX) < 0.5 && fabs(errY - moveY) < 0.5 && fabs(velX) < 0.01 && fabs(velY) < 0.01) {
+            moveX = errX;
+            moveY = errY;
+            velX = 0.0;
+            velY = 0.0;
+        }
+    }
+
+    // Whole pixels the view moves now; the rest carries over.
+    int stepX = (int)lround(fracX + moveX);
+    int stepY = (int)lround(fracY + moveY);
+    fracX = fracX + moveX - stepX;
+    fracY = fracY + moveY - stepY;
 
     if (arpg_test) {
         static unsigned int lastLog = 0;
         if (now - lastLog > 1000) {
             lastLog = now;
             arpg_log("ARPG autotest: camera dude off %d,%d look %d,%d fine %d,%d moving=%d view %dx%d\n",
-                x + 16 + obj_dude->x - middleX, y + 8 + obj_dude->y - middleY, (int)lround(lookX), (int)lround(lookY), fineX, fineY, moving, width, height);
+                feetX - middleX, feetY - middleY, lookX, lookY, fineX, fineY, moving, width, height);
         }
     }
 
-    if (targetX == middleX && targetY == middleY) {
+    if (stepX == 0 && stepY == 0) {
+        arpg_camera_log_motion(now, 0, 0, anim);
         return;
     }
 
     gmouse_3d_off();
+    int refTile = obj_dude->tile;
+    int refX = x;
+    int refY = y;
+
+    // Where the view's middle should be, kept as an offset from the target
+    // so it survives the hex step below.
+    int lagX = targetX - (middleX + stepX);
+    int lagY = targetY - (middleY + stepY);
 
     // Whole hexes first, so the pixel shift stays small.
-    int tile = tile_num(targetX, targetY, elevation);
+    int tile = tile_num(middleX + stepX, middleY + stepY, elevation);
     if (tile != -1 && tile != tile_center_tile) {
         if (tile_set_center(tile, 0) == -1 && arpg_zoom_pct() > 100 && !looking) {
             // Fallout's scroll blockers keep a 640x480 view inside the map; a
@@ -6091,16 +6180,31 @@ static void arpg_camera_tick(unsigned int now)
             tile_set_center(tile, TILE_SET_CENTER_FLAG_IGNORE_SCROLL_RESTRICTIONS);
         }
         tile_coord(obj_dude->tile, &x, &y, elevation);
-        targetX = x + 16 + obj_dude->x + (int)lround(lookX);
-        targetY = y + 8 + obj_dude->y + (int)lround(lookY);
+        targetX = x + 16 + (walking ? obj_dude->x : 0) + lookX;
+        targetY = y + 8 + (walking ? obj_dude->y : 0) + lookY;
     }
 
     // Then the rest in pixels. Capped near a hex, so a scroll blocker that
     // stopped the hex step above still stops the view.
-    fineX = std::max(-48, std::min(fineX + middleX - targetX, 48));
-    fineY = std::max(-32, std::min(fineY + middleY - targetY, 32));
+    int wantFineX = fineX + middleX - (targetX - lagX);
+    int wantFineY = fineY + middleY - (targetY - lagY);
+    fineX = std::max(-48, std::min(wantFineX, 48));
+    fineY = std::max(-32, std::min(wantFineY, 32));
+    // Blocked: don't let the spring wind up against the wall.
+    if (fineX != wantFineX) {
+        velX = 0.0;
+        fracX = 0.0;
+    }
+    if (fineY != wantFineY) {
+        velY = 0.0;
+        fracY = 0.0;
+    }
     tile_set_fine_offset(fineX, fineY);
     tile_refresh_display();
+
+    if (arpg_test && tile_coord(refTile, &x, &y, elevation) != -1) {
+        arpg_camera_log_motion(now, refX - x, refY - y, anim);
+    }
 }
 
 // The player's measured run speed: hexes and milliseconds spent in the run

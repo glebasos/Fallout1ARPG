@@ -42,7 +42,10 @@ Everything above, except:
 - The mouse only aims. Left-click attacks the enemy near the cursor *in place*; clicking the ground does
   nothing (items are still picked up). Space dodges in the WASD direction if one is held.
 - A and S no longer start combat or open the Skilldex (use the interface buttons).
-- Fallout can't fire while walking, so attacks wait until you stop moving. You can't strafe-shoot.
+- Shooting doesn't stop you: while W/A/S/D is held, a shot plays its raise-and-fire animation facing the
+  target while you keep moving at run speed, and the run picks up again the moment the shot is out (no
+  lowering of the gun). Pressing a direction in the middle of a shot gets you moving straight away. Walls and
+  monsters in the way stop the slide a quarter hex short, or you go round them like a run would.
 
 ### `classic`: first version
 Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock; no Q/E/T, flasks or dodge.
@@ -52,8 +55,9 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
 
 ### Diablo II feel
 - **Run and gun**: attacks play at Diablo speed (your attacks 2x, raising/lowering a gun 3x, enemy attacks 1.5x,
-  hit recovery 1.6x, running 1.2x, projectiles 1.5x). An attack cuts a run short; with WASD the run picks up again
-  as soon as the shot is out, so you can keep moving and shooting.
+  hit recovery 1.6x, running 1.2x, projectiles 1.5x). Your bullets, lasers and rockets fly on their own, so you
+  never wait for one to land before moving or shooting again. With WASD you keep moving while you shoot (see
+  above); with click-to-move an attack still stops you.
 - **Monster packs**: every wild monster (rats, radscorpions, mantises, floaters, centaurs, deathclaws) leads a pack
   of 2-4 more. Packs attack on sight and the whole pack comes when one of them is shot. Packs aren't saved: they
   come back when you re-enter a map after 12 game hours, or when you load a game.
@@ -106,6 +110,8 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
 
 Animation speeds (percent): `attack_anim_pct` (200), `aim_anim_pct` (300), `enemy_attack_anim_pct` (150),
 `reaction_anim_pct` (160), `run_speed_pct` (120), `enemy_run_speed_pct` (115), `projectile_speed_pct` (150).
+`move_shot` (1): shoot on the move with WASD and launch your projectiles on their own; 0 = the older behaviour
+(a shot stops you until the bullet lands and the gun is lowered).
 
 Packs: `packs` (1), `pack_min` (2), `pack_max` (4), `pack_density_pct` (100), `champion_pct` (10),
 `unique_pct` (7), `pack_respawn_hours` (12), `max_spawns` per level (60), `aggro_radius` (9).

@@ -63,6 +63,10 @@ typedef struct ArpgAttack {
     bool fired;
     bool hitQueued;
     bool invalid;
+    // The bullet flies in a sequence of its own, started by arpg_tick once
+    // the shot is fired (arpg_launch_projectile).
+    bool detached;
+    bool launchPending;
 } ArpgAttack;
 
 typedef struct ArpgActor {
@@ -271,9 +275,42 @@ static int run_speed_pct = 120;
 static int enemy_run_speed_pct = 115;
 static int projectile_speed_pct = 150;
 
+// Shooting on the move: the player's bullets fly on their own, and a shot
+// fired while WASD is held doesn't stop the run - the player keeps sliding
+// along at run speed while raising the gun and firing (arpg_slide_tick).
+static bool move_shot = true;
+static bool slide_active = false;
+static unsigned int slide_start = 0;
+static unsigned int slide_last = 0;
+// Wanted and applied pixel offset of the slide from the current tile.
+static double slide_sx = 0.0;
+static double slide_sy = 0.0;
+static int slide_px = 0;
+static int slide_py = 0;
+static int slide_hops = 0;
+// Hex direction the slide is taking round an obstacle, or -1.
+static int slide_around = -1;
+static int slide_blocked_ticks = 0;
+
 // Run-and-gun metrics (autotest).
 static unsigned int player_target_time = 0;
 static int stat_shots_while_wasd = 0;
+static int stat_moving_shots = 0;
+static int stat_slide_hexes = 0;
+static int stat_slide_blocked = 0;
+static int stat_run_hexes = 0;
+static int stat_launch_fail = 0;
+static unsigned int stat_wasd_ms = 0;
+static unsigned int stat_run_ms = 0;
+static unsigned int stat_slide_ms = 0;
+static unsigned int stat_wasd_stalled_ms = 0;
+static unsigned int stat_stalled_attack_ms = 0;
+static unsigned int stat_stalled_stand_ms = 0;
+static int stat_launch_noart = 0;
+static int stat_late_slides = 0;
+static int stat_dude_fired = 0;
+static int stat_dude_resolved = 0;
+static int stat_dude_dropped = 0;
 static unsigned int stat_latency_total = 0;
 static int stat_latency_count = 0;
 static int stat_unfired = 0;
@@ -429,7 +466,16 @@ static void arpg_release(ArpgAttack* aa)
 static int arpg_cb_fired(void* a1, void* a2)
 {
     ArpgAttack* aa = (ArpgAttack*)a1;
+    if (!aa->fired && aa->attack.attacker == obj_dude) {
+        stat_dude_fired++;
+    }
     aa->fired = true;
+    if (aa->detached && !aa->launchPending) {
+        // Keeps the attack alive until arpg_tick launches the bullet, even
+        // if the shooter's sequence is cut short right after the shot.
+        aa->launchPending = true;
+        aa->refs += 1;
+    }
     if (aa->attack.attacker == obj_dude && player_target_time != 0) {
         // Click-to-shot latency, for tuning the run-and-gun feel.
         stat_latency_total += get_time() - player_target_time;
@@ -463,6 +509,22 @@ static int arpg_cb_release(void* a1, void* a2)
     // A ranged shot that was already fired still lands even if the shooter's
     // sequence was interrupted.
     arpg_cb_hit(aa, NULL);
+    arpg_release(aa);
+    return 0;
+}
+
+// End of the shooter's sequence when the bullet flies on its own: the hit
+// comes from the bullet's sequence, so this only lets go of the attack.
+static int arpg_cb_shooter_done(void* a1, void* a2)
+{
+    ArpgAttack* aa = (ArpgAttack*)a1;
+    if (arpg_test && !aa->fired && aa->attack.attacker == obj_dude) {
+        stat_unfired++;
+        if (stat_unfired <= 20) {
+            arpg_log("ARPG: dude attack ended unfired (anim %d, fid anim %d, code %d)\n",
+                aa->anim, FID_ANIM_TYPE(obj_dude->fid), (obj_dude->fid & 0xF000) >> 12);
+        }
+    }
     arpg_release(aa);
     return 0;
 }
@@ -617,6 +679,7 @@ void arpg_init()
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "reaction_anim_pct", &reaction_anim_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "run_speed_pct", &run_speed_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "enemy_run_speed_pct", &enemy_run_speed_pct);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "move_shot", &move_shot);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "projectile_speed_pct", &projectile_speed_pct);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "packs", &packs_enabled);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "shrines", &shrines_enabled);
@@ -746,6 +809,7 @@ static void arpg_reset_level()
     wasd_target_tile = -1;
     wasd_dx = 0;
     wasd_dy = 0;
+    slide_active = false;
     dodge_until = 0;
     alert_until = 0;
     next_list_refresh = 0;
@@ -2223,6 +2287,100 @@ static void arpg_scale_damage(Attack* attack)
     }
 }
 
+// Art of the weapon's projectile, or -1 (bullets aren't drawn).
+static int arpg_projectile_fid(Object* weapon)
+{
+    Proto* projectileProto;
+    if (proto_ptr(item_w_proj_pid(weapon), &projectileProto) == -1) {
+        return -1;
+    }
+    return projectileProto->fid;
+}
+
+// Creates the (hidden) bullet of a shot next to the shooter, facing the
+// defender. NULL if the weapon's projectile has no art.
+static Object* arpg_new_projectile(Attack* attack)
+{
+    Object* attacker = attack->attacker;
+    Object* defender = attack->defender;
+
+    int fid = arpg_projectile_fid(attack->weapon);
+    if (fid == -1) {
+        return NULL;
+    }
+
+    Object* projectile;
+    if (obj_new(&projectile, fid, -1) == -1) {
+        return NULL;
+    }
+
+    obj_turn_off(projectile, NULL);
+    obj_set_light(projectile, 9, projectile->lightIntensity, NULL);
+
+    int origin = combat_bullet_start(attacker, defender);
+    obj_move_to_tile(projectile, origin, attacker->elevation, NULL);
+    obj_set_rotation(projectile, tile_dir(attacker->tile, defender->tile), NULL);
+    return projectile;
+}
+
+// Sends a fired shot's bullet on its way in a sequence of its own, from
+// where the shooter stands now. The hit is queued when it arrives.
+static bool arpg_launch_projectile(ArpgAttack* aa)
+{
+    Attack* attack = &(aa->attack);
+    Object* defender = attack->defender;
+
+    Object* projectile = arpg_new_projectile(attack);
+    if (projectile == NULL) {
+        return false;
+    }
+
+    if (register_begin(ANIMATION_REQUEST_RESERVED) == -1) {
+        obj_erase_object(projectile, NULL);
+        return false;
+    }
+
+    register_object_funset(projectile, OBJECT_HIDDEN, 0);
+
+    const char* flyingSfx = gsnd_build_weapon_sfx_name(WEAPON_SOUND_EFFECT_AMMO_FLYING, attack->weapon, attack->hitMode, defender);
+    register_object_play_sfx(projectile, flyingSfx, 0);
+
+    int destination = (attack->attackerFlags & DAM_HIT) != 0 ? defender->tile : attack->tile;
+    register_object_move_straight_to_tile(projectile, destination, defender->elevation, ANIM_WALK, 0);
+    register_object_call(aa, NULL, arpg_cb_hit, -1);
+    register_object_must_erase(projectile);
+    register_object_must_call(aa, NULL, arpg_cb_release, -1);
+
+    // The sequence's forced release can run inside register_end.
+    aa->refs += 1;
+    if (register_end() == -1) {
+        aa->refs -= 1;
+        obj_erase_object(projectile, NULL);
+        return false;
+    }
+
+    return true;
+}
+
+// Starts sliding the player along the WASD direction for the shot that was
+// just registered. A run cut short keeps its progress toward the next tile
+// (`carryX`, `carryY`), so the player doesn't jump back.
+static void arpg_slide_begin(int carryX, int carryY)
+{
+    slide_active = true;
+    slide_start = get_time();
+    slide_last = slide_start;
+    slide_sx = carryX;
+    slide_sy = carryY;
+    slide_px = 0;
+    slide_py = 0;
+    slide_hops = 0;
+    slide_blocked_ticks = 0;
+    slide_around = -1;
+    // The run is re-issued toward a fresh tile once the shot is out.
+    wasd_target_tile = -1;
+}
+
 // Builds and starts the attacker's animation sequence. Returns false if the
 // sequence could not be registered.
 static bool arpg_sequence_attack(ArpgAttack* aa)
@@ -2234,6 +2392,19 @@ static bool arpg_sequence_attack(ArpgAttack* aa)
     int anim = aa->anim;
 
     bool ranged = anim >= ANIM_FIRE_SINGLE || anim == ANIM_THROW_ANIM;
+
+    // The player's bullets fly on their own, so the shooter doesn't stand
+    // there until they land. With WASD held the player also keeps moving and
+    // skips lowering the gun; the run picks up again right after the shot.
+    bool detached = move_shot && attacker == obj_dude && ranged && weapon != NULL && anim != ANIM_THROW_ANIM;
+    bool moving = move_shot && attacker == obj_dude && ranged && wasd_moving;
+    int carryX = 0;
+    int carryY = 0;
+    if (moving && (FID_ANIM_TYPE(attacker->fid) == ANIM_RUNNING || FID_ANIM_TYPE(attacker->fid) == ANIM_WALK)) {
+        // A run's offset is its progress since the last tile.
+        carryX = attacker->x;
+        carryY = attacker->y;
+    }
 
     int fid = art_id(OBJ_TYPE_CRITTER, attacker->fid & 0xFFF, anim, (attacker->fid & 0xF000) >> 12, attacker->rotation + 1);
     CacheEntry* artHandle;
@@ -2276,31 +2447,37 @@ static bool arpg_sequence_attack(ArpgAttack* aa)
     register_object_animate(attacker, anim, 0);
     register_object_call(aa, NULL, arpg_cb_fired, actionFrame);
 
+    if (detached) {
+        if (!moving) {
+            register_object_animate(attacker, ANIM_UNPOINT, -1);
+        }
+        register_object_must_call(aa, NULL, arpg_cb_shooter_done, -1);
+
+        aa->detached = true;
+        if (register_end() == -1) {
+            aa->detached = false;
+            return false;
+        }
+
+        if (moving) {
+            arpg_slide_begin(carryX, carryY);
+            stat_moving_shots++;
+        }
+        return true;
+    }
+
     if (ranged && weapon != NULL && anim != ANIM_THROW_ANIM) {
-        int projectilePid = item_w_proj_pid(weapon);
-        Proto* projectileProto;
-        if (proto_ptr(projectilePid, &projectileProto) != -1 && projectileProto->fid != -1) {
-            if (obj_new(&projectile, projectileProto->fid, -1) != -1) {
-                obj_turn_off(projectile, NULL);
-                obj_set_light(projectile, 9, projectile->lightIntensity, NULL);
+        projectile = arpg_new_projectile(attack);
+        if (projectile != NULL) {
+            register_object_funset(projectile, OBJECT_HIDDEN, 0);
 
-                int origin = combat_bullet_start(attacker, defender);
-                obj_move_to_tile(projectile, origin, attacker->elevation, NULL);
-                obj_set_rotation(projectile, tile_dir(attacker->tile, defender->tile), NULL);
+            const char* flyingSfx = gsnd_build_weapon_sfx_name(WEAPON_SOUND_EFFECT_AMMO_FLYING, weapon, attack->hitMode, defender);
+            register_object_play_sfx(projectile, flyingSfx, 0);
 
-                register_object_funset(projectile, OBJECT_HIDDEN, 0);
-
-                const char* flyingSfx = gsnd_build_weapon_sfx_name(WEAPON_SOUND_EFFECT_AMMO_FLYING, weapon, attack->hitMode, defender);
-                register_object_play_sfx(projectile, flyingSfx, 0);
-
-                int destination = (attack->attackerFlags & DAM_HIT) != 0 ? defender->tile : attack->tile;
-                register_object_move_straight_to_tile(projectile, destination, defender->elevation, ANIM_WALK, 0);
-                register_object_call(aa, NULL, arpg_cb_hit, -1);
-                register_object_must_erase(projectile);
-            } else {
-                projectile = NULL;
-                register_object_call(aa, NULL, arpg_cb_hit, 0);
-            }
+            int destination = (attack->attackerFlags & DAM_HIT) != 0 ? defender->tile : attack->tile;
+            register_object_move_straight_to_tile(projectile, destination, defender->elevation, ANIM_WALK, 0);
+            register_object_call(aa, NULL, arpg_cb_hit, -1);
+            register_object_must_erase(projectile);
         } else {
             register_object_call(aa, NULL, arpg_cb_hit, 0);
         }
@@ -2317,6 +2494,12 @@ static bool arpg_sequence_attack(ArpgAttack* aa)
             obj_erase_object(projectile, NULL);
         }
         return false;
+    }
+
+    if (moving) {
+        // Thrown weapons: no bullet, but the thrower keeps moving too.
+        arpg_slide_begin(carryX, carryY);
+        stat_moving_shots++;
     }
 
     return true;
@@ -2372,6 +2555,8 @@ static bool arpg_start_attack(Object* attacker, Object* defender, int hitMode, i
     aa->fired = false;
     aa->hitQueued = false;
     aa->invalid = false;
+    aa->detached = false;
+    aa->launchPending = false;
     live_attacks.push_back(aa);
 
     stat_attacks++;
@@ -3832,10 +4017,46 @@ void arpg_tick()
         std::vector<ArpgAttack*> hits;
         hits.swap(pending_hits);
         for (ArpgAttack* aa : hits) {
+            if (aa->attack.attacker == obj_dude) {
+                if (aa->invalid) {
+                    stat_dude_dropped++;
+                } else {
+                    stat_dude_resolved++;
+                }
+            }
             if (!aa->invalid) {
                 arpg_resolve(aa);
             }
             arpg_release(aa);
+        }
+    }
+
+    // Launch the bullets of shots fired since the last tick.
+    for (size_t index = 0; index < live_attacks.size();) {
+        ArpgAttack* aa = live_attacks[index];
+        if (!aa->launchPending) {
+            index++;
+            continue;
+        }
+
+        aa->launchPending = false;
+        if (!aa->invalid) {
+            // Bullets without art (and any with no room for a sequence)
+            // land at once.
+            if (arpg_projectile_fid(aa->attack.weapon) == -1) {
+                stat_launch_noart++;
+                arpg_cb_hit(aa, NULL);
+            } else if (!arpg_launch_projectile(aa)) {
+                stat_launch_fail++;
+                arpg_cb_hit(aa, NULL);
+            }
+        }
+
+        // The launch reference taken in arpg_cb_fired; this may free `aa`.
+        size_t before = live_attacks.size();
+        arpg_release(aa);
+        if (live_attacks.size() == before) {
+            index++;
         }
     }
 
@@ -4242,6 +4463,14 @@ void arpg_tick()
                 stat_kills,
                 stat_shots_while_wasd,
                 stat_latency_count > 0 ? (int)(stat_latency_total / stat_latency_count) : -1);
+            arpg_log("ARPG autotest done: move_shot=%d moving_shots=%d late_slides=%d slide_hexes=%d slide_blocked=%d launch_fail=%d launch_noart=%d\n",
+                move_shot ? 1 : 0, stat_moving_shots, stat_late_slides, stat_slide_hexes, stat_slide_blocked, stat_launch_fail, stat_launch_noart);
+            arpg_log("ARPG autotest done: dude shots fired=%d resolved=%d dropped=%d in_flight=%d\n",
+                stat_dude_fired, stat_dude_resolved, stat_dude_dropped, (int)live_attacks.size());
+            arpg_log("ARPG autotest done: wasd_ms=%u run_ms=%u slide_ms=%u stalled_ms=%u (attack %u, stand %u) run_hexes=%d (%.2f/s) slide %.2f hexes/s\n",
+                stat_wasd_ms, stat_run_ms, stat_slide_ms, stat_wasd_stalled_ms, stat_stalled_attack_ms, stat_stalled_stand_ms, stat_run_hexes,
+                stat_run_ms > 0 ? stat_run_hexes * 1000.0 / stat_run_ms : 0.0,
+                stat_slide_ms > 0 ? stat_slide_hexes * 1000.0 / stat_slide_ms : 0.0);
             game_user_wants_to_quit = 2;
         }
     }
@@ -4762,7 +4991,10 @@ static bool arpg_run_to(int tile)
         return false;
     }
 
-    if (!arpg_dude_can_move()) {
+    // Lowering the gun after a shot is only for show (the shot is out by
+    // then), so a run may cut it short.
+    bool lowering = move_shot && FID_ANIM_TYPE(obj_dude->fid) == ANIM_UNPOINT;
+    if (!arpg_dude_can_move() && !lowering) {
         return false;
     }
 
@@ -4854,6 +5086,351 @@ static void arpg_camera_follow()
     }
 }
 
+// The player's measured run speed: hexes and milliseconds spent in the run
+// animation (arpg_measure_run), halved now and then so it follows changes.
+static double run_measured_hexes = 0.0;
+static double run_measured_ms = 0.0;
+
+// Hexes per millisecond the player covers when running, from the run
+// animation: one cycle's frame offsets say how far a cycle goes, compute_tpf()
+// how long it takes (run_speed_pct included). Frames only advance on game
+// loop ticks, so real runs are slower than this; arpg_dude_run_rate() prefers
+// the measured speed.
+static double arpg_dude_art_run_rate()
+{
+    static int cachedFid = -1;
+    static double cachedRate = 0.0;
+
+    int fid = art_id(OBJ_TYPE_CRITTER, obj_dude->fid & 0xFFF, ANIM_RUNNING, (obj_dude->fid & 0xF000) >> 12, 0);
+    if (fid == cachedFid) {
+        return cachedRate;
+    }
+
+    double hexes = 0.0;
+    int rotations = 0;
+    int frames = 0;
+    unsigned int frameMs = 0;
+    for (int rotation = 0; rotation < ROTATION_COUNT; rotation++) {
+        int rotationFid = art_id(OBJ_TYPE_CRITTER, obj_dude->fid & 0xFFF, ANIM_RUNNING, (obj_dude->fid & 0xF000) >> 12, rotation + 1);
+        CacheEntry* handle;
+        Art* art = art_ptr_lock(rotationFid, &handle);
+        if (art == NULL) {
+            continue;
+        }
+
+        frames = art_frame_max_frame(art);
+        int sumX = 0;
+        int sumY = 0;
+        for (int frame = 0; frame < frames; frame++) {
+            int x;
+            int y;
+            art_frame_hot(art, frame, rotation, &x, &y);
+            sumX += x;
+            sumY += y;
+        }
+        art_ptr_unlock(handle);
+
+        double step = sqrt((double)(off_tile[0][rotation] * off_tile[0][rotation] + off_tile[1][rotation] * off_tile[1][rotation]));
+        hexes += sqrt((double)(sumX * sumX + sumY * sumY)) / step;
+        rotations++;
+        frameMs = compute_tpf(obj_dude, rotationFid);
+    }
+
+    // Without art: about four hexes a second.
+    double rate = 0.004;
+    if (rotations > 0 && frames > 0 && frameMs > 0 && hexes > 0.0) {
+        rate = hexes / rotations / (frames * frameMs);
+    }
+
+    cachedFid = fid;
+    cachedRate = rate;
+    arpg_log("ARPG: run animation rate %.2f hexes/s (%d frames, %u ms/frame, %.2f hexes/cycle)\n",
+        rate * 1000.0, frames, frameMs, rotations > 0 ? hexes / rotations : 0.0);
+    return rate;
+}
+
+// Hexes per millisecond the player really covers when running, so a slide
+// looks like the run it stands in for.
+static double arpg_dude_run_rate()
+{
+    if (run_measured_ms >= 2000.0 && run_measured_hexes >= 8.0) {
+        return run_measured_hexes / run_measured_ms;
+    }
+    // Before there's a measurement: about what the frame timing costs.
+    return arpg_dude_art_run_rate() * 0.8;
+}
+
+// Called every tick: adds running time and the tiles it covered to the
+// measured run speed.
+static void arpg_measure_run(unsigned int now)
+{
+    static unsigned int lastTick = 0;
+    static int lastTile = -1;
+    static bool wasRunning = false;
+
+    bool running = FID_ANIM_TYPE(obj_dude->fid) == ANIM_RUNNING && anim_busy(obj_dude);
+    if (running && wasRunning) {
+        run_measured_ms += std::min(now - lastTick, 100u);
+        int hexes = tile_dist(lastTile, obj_dude->tile);
+        if (hexes <= 2) {
+            run_measured_hexes += hexes;
+        }
+        if (run_measured_ms > 30000.0) {
+            run_measured_ms /= 2.0;
+            run_measured_hexes /= 2.0;
+        }
+    }
+
+    wasRunning = running;
+    lastTick = now;
+    lastTile = obj_dude->tile;
+}
+
+// Splits screen direction (ux, uy) into hex steps: `a` steps toward
+// `rotation` and `b` toward the next rotation clockwise per pixel. A run that
+// way zigzags between those two.
+static int arpg_hex_split(double ux, double uy, double* a, double* b)
+{
+    for (int rotation = 0; rotation < ROTATION_COUNT; rotation++) {
+        int next = (rotation + 1) % ROTATION_COUNT;
+        double ax = off_tile[0][rotation];
+        double ay = off_tile[1][rotation];
+        double bx = off_tile[0][next];
+        double by = off_tile[1][next];
+        double det = ax * by - ay * bx;
+        *a = (ux * by - uy * bx) / det;
+        *b = (ax * uy - ay * ux) / det;
+        if (*a >= -1e-9 && *b >= -1e-9 && *a + *b > 0.0) {
+            return rotation;
+        }
+    }
+    *a = 1.0 / 32.0;
+    *b = 0.0;
+    return ROTATION_E;
+}
+
+// Screen pixels per hex step for a run in screen direction (ux, uy) (unit
+// vector): straight east is 32 px a step, straight up only 12.
+static double arpg_hex_step_px(double ux, double uy)
+{
+    double a;
+    double b;
+    arpg_hex_split(ux, uy, &a, &b);
+    return 1.0 / (a + b);
+}
+
+// How far offset (x, y) from the current tile's centre lies toward the
+// neighbour in `rotation`: 0 at the centre, 0.5 on the border, 1 at its
+// centre. Measured on the hex grid itself, not on screen: the screen squashes
+// it (diagonal neighbours are 12 px up or down where a regular grid's would
+// be 27.7, so y is scaled by 27.7 / 12, 16/3 once squared), and screen
+// distances would put the diagonal neighbours nearer than east and west.
+static double arpg_toward_neighbour(double x, double y, int rotation)
+{
+    double ox = off_tile[0][rotation];
+    double oy = off_tile[1][rotation];
+    return (x * ox + y * oy * 16.0 / 3.0) / 1024.0;
+}
+
+// Moves the player along the WASD direction at run speed while a shot's
+// sequence owns the player's animation (raising the gun and firing), so
+// shooting doesn't stop the player. The move is done by hand: a pixel offset
+// within the tile, and on to the neighbouring tile once that one's centre is
+// nearer.
+static void arpg_slide_tick(unsigned int now, int dx, int dy)
+{
+    if (!slide_active) {
+        return;
+    }
+
+    int anim = FID_ANIM_TYPE(obj_dude->fid);
+    bool shooting = anim == ANIM_POINT || anim == ANIM_UNPOINT || anim == ANIM_THROW_ANIM
+        || (anim >= ANIM_FIRE_SINGLE && anim <= ANIM_FIRE_CONTINUOUS);
+    if (anim == ANIM_STAND && now - slide_start < 100) {
+        // The shot's first frame shows on the next animation tick.
+        shooting = true;
+    }
+
+    if (!shooting || !anim_busy(obj_dude) || (dx == 0 && dy == 0)
+        || (obj_dude->data.critter.combat.results & (DAM_KNOCKED_DOWN | DAM_KNOCKED_OUT | DAM_DEAD)) != 0) {
+        slide_active = false;
+        if (arpg_test) {
+            arpg_log("ARPG: slide end (%s, anim %d): %d hexes in %u ms, %d blocked ticks, rate %.2f hexes/s\n",
+                dx == 0 && dy == 0 ? "released" : (!shooting || !anim_busy(obj_dude) ? "shot over" : "knocked down"),
+                anim, slide_hops, now - slide_start, slide_blocked_ticks, arpg_dude_run_rate() * 1000.0);
+        }
+        return;
+    }
+
+    unsigned int elapsed = std::min(now - slide_last, 50u);
+    slide_last = now;
+
+    // Same screen direction as arpg_tile_toward().
+    double vx = dx * 32.0;
+    double vy = dy * 16.0;
+    double len = sqrt(vx * vx + vy * vy);
+    double ux = vx / len;
+    double uy = vy / len;
+    double rate = arpg_dude_run_rate();
+    double distance = rate * arpg_hex_step_px(ux, uy) * elapsed;
+
+    int elevation = obj_dude->elevation;
+    bool blocked[ROTATION_COUNT];
+    for (int rotation = 0; rotation < ROTATION_COUNT; rotation++) {
+        int tile = tile_num_in_direction(obj_dude->tile, rotation, 1);
+        blocked[rotation] = tile == -1 || obj_blocking_at(obj_dude, tile, elevation) != NULL;
+    }
+
+    // A step may take the player no nearer than a quarter hex to a wall or
+    // critter in the way (one of the two hex directions it heads between),
+    // and never into one elsewhere.
+    auto stepAllowed = [&](double x, double y) {
+        double len = sqrt(x * x + y * y);
+        if (len <= 0.0) {
+            return false;
+        }
+        double a;
+        double b;
+        int first = arpg_hex_split(x / len, y / len, &a, &b);
+        int second = (first + 1) % ROTATION_COUNT;
+        for (int rotation = 0; rotation < ROTATION_COUNT; rotation++) {
+            if (!blocked[rotation]) {
+                continue;
+            }
+            double before = arpg_toward_neighbour(slide_sx, slide_sy, rotation);
+            double after = arpg_toward_neighbour(slide_sx + x, slide_sy + y, rotation);
+            if (after <= before) {
+                continue;
+            }
+            bool ahead = (rotation == first && a > 1e-6) || (rotation == second && b > 1e-6);
+            if (after > (ahead ? 0.25 : 0.5)) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    double stepX = ux * distance;
+    double stepY = uy * distance;
+    if (stepAllowed(stepX, stepY)) {
+        slide_around = -1;
+    } else {
+        // Go round it like a run would: toward the middle of a free
+        // neighbouring hex no more than 60 degrees off the WASD way, sticking
+        // to the one picked before so the player doesn't wobble.
+        stepX = 0.0;
+        stepY = 0.0;
+        std::vector<std::pair<double, int>> ways;
+        for (int rotation = 0; rotation < ROTATION_COUNT; rotation++) {
+            double ox = off_tile[0][rotation];
+            double oy = off_tile[1][rotation];
+            double facing = (ox * ux + oy * uy) / sqrt(ox * ox + oy * oy);
+            if (!blocked[rotation] && facing >= 0.5) {
+                ways.push_back({ rotation == slide_around ? 2.0 : facing, rotation });
+            }
+        }
+        std::sort(ways.begin(), ways.end(), [](const std::pair<double, int>& lhs, const std::pair<double, int>& rhs) {
+            return lhs.first > rhs.first;
+        });
+
+        for (const auto& way : ways) {
+            int rotation = way.second;
+            double cx = off_tile[0][rotation] - slide_sx;
+            double cy = off_tile[1][rotation] - slide_sy;
+            double clen = sqrt(cx * cx + cy * cy);
+            if (clen <= 0.0) {
+                continue;
+            }
+            double wayDistance = rate * arpg_hex_step_px(cx / clen, cy / clen) * elapsed;
+            if (stepAllowed(cx / clen * wayDistance, cy / clen * wayDistance)) {
+                stepX = cx / clen * wayDistance;
+                stepY = cy / clen * wayDistance;
+                slide_around = rotation;
+                break;
+            }
+        }
+    }
+
+    if (distance > 0.0 && stepX == 0.0 && stepY == 0.0) {
+        stat_slide_blocked++;
+        slide_blocked_ticks++;
+    }
+
+    double sx = slide_sx + stepX;
+    double sy = slide_sy + stepY;
+
+    Rect dirty;
+    Rect temp;
+    obj_bound(obj_dude, &dirty);
+
+    // Hop to the neighbouring tile whose centre is now nearest; moving
+    // straight up or down passes a corner, so up to two hops at once.
+    for (int hop = 0; hop < 3; hop++) {
+        int best = -1;
+        double bestValue = 0.5;
+        for (int rotation = 0; rotation < ROTATION_COUNT; rotation++) {
+            double value = arpg_toward_neighbour(sx, sy, rotation);
+            if (value > bestValue) {
+                best = rotation;
+                bestValue = value;
+            }
+        }
+
+        if (best == -1) {
+            break;
+        }
+
+        int tile = tile_num_in_direction(obj_dude->tile, best, 1);
+        if (tile == -1 || obj_blocking_at(obj_dude, tile, elevation) != NULL) {
+            // Never step into anything; hold at the border.
+            sx -= stepX;
+            sy -= stepY;
+            stat_slide_blocked++;
+            slide_blocked_ticks++;
+            break;
+        }
+
+        // obj_move_to_tile() zeroes the offset; keep the shooter in place on
+        // screen, now measured from the new tile.
+        int x = obj_dude->x;
+        int y = obj_dude->y;
+        obj_move_to_tile(obj_dude, tile, elevation, &temp);
+        rect_min_bound(&dirty, &temp, &dirty);
+        obj_offset(obj_dude, x - off_tile[0][best], y - off_tile[1][best], &temp);
+        rect_min_bound(&dirty, &temp, &dirty);
+
+        sx -= off_tile[0][best];
+        sy -= off_tile[1][best];
+        slide_sx -= off_tile[0][best];
+        slide_sy -= off_tile[1][best];
+        slide_px -= off_tile[0][best];
+        slide_py -= off_tile[1][best];
+        stat_slide_hexes++;
+        slide_hops++;
+
+        // Traps and trigger areas, as for a normal step.
+        scr_chk_spatials_in(obj_dude, tile, elevation);
+        if (obj_dude->tile != tile || obj_dude->elevation != elevation) {
+            slide_active = false;
+            tile_refresh_rect(&dirty, elevation);
+            return;
+        }
+    }
+
+    int moveX = (int)lround(sx) - slide_px;
+    int moveY = (int)lround(sy) - slide_py;
+    if (moveX != 0 || moveY != 0) {
+        obj_offset(obj_dude, moveX, moveY, &temp);
+        rect_min_bound(&dirty, &temp, &dirty);
+        slide_px += moveX;
+        slide_py += moveY;
+    }
+    slide_sx = sx;
+    slide_sy = sy;
+
+    tile_refresh_rect(&dirty, elevation);
+}
+
 static void arpg_wasd_tick(unsigned int now)
 {
     if (controls != ARPG_CONTROLS_WASD) {
@@ -4862,12 +5439,48 @@ static void arpg_wasd_tick(unsigned int now)
     }
 
     arpg_camera_follow();
+    arpg_measure_run(now);
 
     int dx;
     int dy;
     arpg_wasd_dir(&dx, &dy);
+    bool held = (dx != 0 || dy != 0) && arpg_input_ready();
 
-    if ((dx == 0 && dy == 0) || !arpg_input_ready()) {
+    if (arpg_test) {
+        // Where the time goes while WASD is held: running, sliding through
+        // a shot, or standing still.
+        static unsigned int lastTick = 0;
+        static int lastTile = -1;
+        unsigned int elapsed = lastTick != 0 ? std::min(now - lastTick, 100u) : 0;
+        lastTick = now;
+        int anim = FID_ANIM_TYPE(obj_dude->fid);
+        bool running = anim == ANIM_RUNNING || anim == ANIM_WALK;
+        if (held) {
+            stat_wasd_ms += elapsed;
+            if (running) {
+                stat_run_ms += elapsed;
+            } else if (slide_active) {
+                stat_slide_ms += elapsed;
+            } else {
+                stat_wasd_stalled_ms += elapsed;
+                bool attacking = anim == ANIM_POINT || anim == ANIM_UNPOINT || anim == ANIM_THROW_ANIM
+                    || (anim >= ANIM_FIRE_SINGLE && anim <= ANIM_FIRE_CONTINUOUS);
+                if (attacking) {
+                    stat_stalled_attack_ms += elapsed;
+                } else if (anim == ANIM_STAND) {
+                    stat_stalled_stand_ms += elapsed;
+                }
+            }
+        }
+        if (running && lastTile != -1 && obj_dude->tile != lastTile && tile_dist(lastTile, obj_dude->tile) <= 2) {
+            stat_run_hexes += tile_dist(lastTile, obj_dude->tile);
+        }
+        lastTile = obj_dude->tile;
+    }
+
+    arpg_slide_tick(now, held ? dx : 0, held ? dy : 0);
+
+    if (!held) {
         if (wasd_moving) {
             // Released: stop now instead of finishing the path, but never
             // cut a hit reaction, knockdown or attack short.
@@ -4889,8 +5502,17 @@ static void arpg_wasd_tick(unsigned int now)
     }
     wasd_moving = true;
 
+    int anim = FID_ANIM_TYPE(obj_dude->fid);
+    if (move_shot && !slide_active && anim_busy(obj_dude)
+        && (anim == ANIM_POINT || (anim >= ANIM_FIRE_SINGLE && anim <= ANIM_FIRE_CONTINUOUS))) {
+        // WASD pressed in the middle of a shot fired standing: get moving
+        // now rather than when it's over.
+        arpg_slide_begin(0, 0);
+        stat_late_slides++;
+    }
+
     bool turned = dx != wasd_dx || dy != wasd_dy;
-    bool idle = !anim_busy(obj_dude);
+    bool idle = !anim_busy(obj_dude) || (move_shot && anim == ANIM_UNPOINT);
     bool nearEnd = wasd_target_tile != -1 && tile_dist(obj_dude->tile, wasd_target_tile) <= 2;
 
     if (!turned && !idle && !nearEnd) {

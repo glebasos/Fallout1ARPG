@@ -1002,8 +1002,16 @@ static void hotbar_draw_slot(unsigned char* buf, const HotSlot* slot, const HotS
 
     switch (slot->kind) {
     case HOT_FLASK: {
+        // The drug the key would use (the first one carried), else the slot's main drug.
+        int pid = belt_pids[slot->flask][0];
+        for (int candidate : belt_pids[slot->flask]) {
+            if (candidate != -1 && inven_pid_quantity_carried(obj_dude, candidate) > 0) {
+                pid = candidate;
+                break;
+            }
+        }
         Proto* proto;
-        if (proto_ptr(belt_pids[slot->flask][0], &proto) != -1) {
+        if (proto_ptr(pid, &proto) != -1) {
             scale_art(proto->item.inventoryFid, inner, innerSize, innerSize, pitch);
         }
         break;

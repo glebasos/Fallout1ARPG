@@ -27,6 +27,7 @@
 #include "game/inventry.h"
 #include "game/item.h"
 #include "game/map.h"
+#include "plib/gnw/gnw.h"
 #include "game/object.h"
 #include "game/party.h"
 #include "game/perk.h"
@@ -4009,7 +4010,8 @@ static void arpg_hold_tick(unsigned int now)
     int mouseX;
     int mouseY;
     mouse_get_position(&mouseX, &mouseY);
-    if (mouseY >= screenGetHeight() - 100) {
+    // Only over the map: not the interface bar, hotkey bar, minimap or tooltips.
+    if (mouseY >= screenGetHeight() - 100 || win_get_top_win(mouseX, mouseY) != display_win) {
         return;
     }
 

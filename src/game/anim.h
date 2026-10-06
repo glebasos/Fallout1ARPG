@@ -115,6 +115,7 @@ int register_begin(int a1);
 int register_priority(int a1);
 int register_clear(Object* a1);
 int register_clear_force(Object* a1);
+void anim_debug_dump(Object* obj, void (*log)(const char* line));
 int register_end();
 int check_registry(Object* obj);
 int anim_busy(Object* a1);

@@ -72,6 +72,116 @@ typedef struct ArpgActor {
     bool triedWeapon;
 } ArpgActor;
 
+// Monster ranks and modifiers, after Diablo II's MonUMod.txt (champion,
+// unique and minion bonuses use its Normal-difficulty constants: minions
+// +100% life, champions +200% life and 3x XP, uniques +300% life and 5x XP).
+enum {
+    RANK_NORMAL,
+    RANK_MINION,
+    RANK_CHAMPION,
+    RANK_UNIQUE,
+};
+
+enum {
+    // Unique modifiers (Fallout flavoured).
+    AFFIX_STRONG = 0x0001, // Extra Strong
+    AFFIX_FAST = 0x0002, // Extra Fast
+    AFFIX_ARMORED = 0x0004, // Stone Skin
+    AFFIX_FIRE = 0x0008, // Fire Enchanted: burns on hit, explodes on death
+    AFFIX_RADIOACTIVE = 0x0010, // Cursed: hits irradiate
+    AFFIX_DRAIN = 0x0020, // Mana Burn: hits drain energy
+    AFFIX_VAMPIRIC = 0x0040, // life steal
+    AFFIX_PHASING = 0x0080, // Teleport
+    AFFIX_LEADER = 0x0100, // Might aura: nearby pack members hit harder
+    AFFIX_VENOM = 0x0200, // hits poison
+    // Champion kinds.
+    CHAMP_CHAMPION = 0x1000,
+    CHAMP_FANATIC = 0x2000,
+    CHAMP_BERSERKER = 0x4000,
+    CHAMP_GHOSTLY = 0x8000,
+    CHAMP_POSSESSED = 0x10000,
+};
+
+static const unsigned int unique_affixes[] = {
+    AFFIX_STRONG,
+    AFFIX_FAST,
+    AFFIX_ARMORED,
+    AFFIX_FIRE,
+    AFFIX_RADIOACTIVE,
+    AFFIX_DRAIN,
+    AFFIX_VAMPIRIC,
+    AFFIX_PHASING,
+    AFFIX_LEADER,
+    AFFIX_VENOM,
+};
+
+static const unsigned int champion_kinds[] = {
+    CHAMP_CHAMPION,
+    CHAMP_CHAMPION,
+    CHAMP_FANATIC,
+    CHAMP_BERSERKER,
+    CHAMP_GHOSTLY,
+    CHAMP_POSSESSED,
+};
+
+static const struct {
+    unsigned int flag;
+    const char* name;
+} affix_names[] = {
+    { CHAMP_CHAMPION, "Champion" },
+    { CHAMP_FANATIC, "Fanatic" },
+    { CHAMP_BERSERKER, "Berserker" },
+    { CHAMP_GHOSTLY, "Ghostly" },
+    { CHAMP_POSSESSED, "Possessed" },
+    { AFFIX_STRONG, "Extra Strong" },
+    { AFFIX_FAST, "Extra Fast" },
+    { AFFIX_ARMORED, "Armored" },
+    { AFFIX_FIRE, "Fire Enchanted" },
+    { AFFIX_RADIOACTIVE, "Radioactive" },
+    { AFFIX_DRAIN, "Energy Drain" },
+    { AFFIX_VAMPIRIC, "Vampiric" },
+    { AFFIX_PHASING, "Phasing" },
+    { AFFIX_LEADER, "Pack Leader" },
+    { AFFIX_VENOM, "Venomous" },
+};
+
+typedef struct ArpgMonster {
+    int rank;
+    unsigned int affixes;
+    int pack;
+    Object* leader;
+    // Damage taken is divided by (100 + hpPct) / 100: extra life without
+    // touching the shared proto's maximum HP.
+    int hpPct;
+    int dmgPct;
+    int speedPct;
+    int xpPct;
+    unsigned int nextPhase;
+    char name[48];
+} ArpgMonster;
+
+static std::unordered_map<Object*, ArpgMonster> monsters;
+static std::vector<int> alerted_packs;
+static int next_pack_id = 1;
+// (map * 4 + elevation) -> game hour packs were last spawned there.
+static std::unordered_map<int, int> populated_hour;
+// Levels already populated since the map was last loaded.
+static std::vector<int> populated_levels;
+static bool populate_pending = false;
+static unsigned int populate_time = 0;
+static unsigned int next_aggro_check = 0;
+
+static bool packs_enabled = true;
+static int pack_min = 2;
+static int pack_max = 4;
+static int pack_density_pct = 100;
+static int champion_pct = 10;
+static int unique_pct = 7;
+static int pack_respawn_hours = 12;
+static int max_spawns = 60;
+static int aggro_radius = 9;
+static int stat_spawned = 0;
+
 static bool arpg_on = false;
 static bool arpg_test = false;
 static int enemy_delay_pct = 130;
@@ -105,6 +215,7 @@ static unsigned int player_target_time = 0;
 static int stat_shots_while_wasd = 0;
 static unsigned int stat_latency_total = 0;
 static int stat_latency_count = 0;
+static int stat_unfired = 0;
 
 // Energy (the blue globe) fuels special attacks.
 static double energy = -1.0;
@@ -127,6 +238,7 @@ static bool wasd_moving = false;
 static int autotest_wasd = -1;
 static bool dump_items = false;
 static bool autotest_iframes = false;
+static bool autotest_god = false;
 
 static unsigned int next_hold_action = 0;
 static int hold_last_tile = -1;
@@ -195,7 +307,8 @@ static bool autotest_knockdown_logged = false;
 static Object* player_unreachable = NULL;
 static unsigned int player_unreachable_until = 0;
 
-static void arpg_drop_loot(Object* victim);
+static void arpg_drop_loot(Object* victim, int rolls, bool guaranteedGear);
+static void arpg_react(Attack* attack, Object* victim, int damage, int flags, int knockback);
 static void arpg_wasd_tick(unsigned int now);
 static void arpg_dodge();
 static void arpg_player_aimed(Object* target, int hitLocation);
@@ -246,6 +359,13 @@ static int arpg_cb_hit(void* a1, void* a2)
 static int arpg_cb_release(void* a1, void* a2)
 {
     ArpgAttack* aa = (ArpgAttack*)a1;
+    if (arpg_test && !aa->fired && aa->attack.attacker == obj_dude) {
+        stat_unfired++;
+        if (stat_unfired <= 20) {
+            arpg_log("ARPG: dude attack ended unfired (anim %d, fid anim %d, code %d)\n",
+                aa->anim, FID_ANIM_TYPE(obj_dude->fid), (obj_dude->fid & 0xF000) >> 12);
+        }
+    }
     // A ranged shot that was already fired still lands even if the shooter's
     // sequence was interrupted.
     arpg_cb_hit(aa, NULL);
@@ -395,8 +515,18 @@ void arpg_init()
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "run_speed_pct", &run_speed_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "enemy_run_speed_pct", &enemy_run_speed_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "projectile_speed_pct", &projectile_speed_pct);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "packs", &packs_enabled);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "pack_min", &pack_min);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "pack_max", &pack_max);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "pack_density_pct", &pack_density_pct);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "champion_pct", &champion_pct);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "unique_pct", &unique_pct);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "pack_respawn_hours", &pack_respawn_hours);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "max_spawns", &max_spawns);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "aggro_radius", &aggro_radius);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "dump_items", &dump_items);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_iframes", &autotest_iframes);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_god", &autotest_god);
     // Autotest: hold a WASD direction (0=W 1=D 2=S 3=A) through the real
     // movement path.
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_wasd", &autotest_wasd);
@@ -414,7 +544,7 @@ void arpg_init()
 
     // Command-line test switches are merged into game_config, which CE saves
     // back to fallout.cfg on exit. Neutralize them so they don't stick.
-    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_iframes" };
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_iframes", "autotest_god" };
     for (const char* key : testKeys) {
         char* value;
         if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
@@ -467,12 +597,9 @@ static void arpg_free_crit_list()
     crit_count = 0;
 }
 
-void arpg_reset()
+// Per-level state, reset on every elevation or map change.
+static void arpg_reset_level()
 {
-    if (!arpg_on) {
-        return;
-    }
-
     for (ArpgAttack* aa : pending_hits) {
         arpg_release(aa);
     }
@@ -502,7 +629,25 @@ void arpg_reset()
     alert_until = 0;
     next_list_refresh = 0;
     last_energy_tick = 0;
+    alerted_packs.clear();
     arpg_hud_reset();
+}
+
+// Every object is about to be freed (map load, game load or reset).
+void arpg_reset()
+{
+    if (!arpg_on) {
+        return;
+    }
+
+    arpg_reset_level();
+    monsters.clear();
+    populated_levels.clear();
+    populate_pending = false;
+    // Force the map-change path in arpg_tick, even for a reload of the same
+    // map, so packs are spawned again.
+    last_map = -1;
+    last_elevation = -1;
 }
 
 static bool arpg_alive(Object* critter)
@@ -531,6 +676,12 @@ void arpg_on_critter_removed(Object* critter)
 
     actors.erase(critter);
     stagger_until.erase(critter);
+    monsters.erase(critter);
+    for (auto& entry : monsters) {
+        if (entry.second.leader == critter) {
+            entry.second.leader = NULL;
+        }
+    }
 
     for (auto& entry : actors) {
         if (entry.second.target == critter) {
@@ -632,6 +783,481 @@ static void arpg_float_text(Object* obj, const char* text, int color)
     Rect rect;
     if (text_object_create(obj, buffer, 101, color, colorTable[0], &rect) == 0) {
         tile_refresh_rect(&rect, obj->elevation);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Monster packs, champions and uniques (Diablo II style)
+// ---------------------------------------------------------------------------
+
+static ArpgMonster* arpg_monster(Object* critter)
+{
+    if (critter == NULL) {
+        return NULL;
+    }
+    auto it = monsters.find(critter);
+    return it != monsters.end() ? &(it->second) : NULL;
+}
+
+// Wild creatures: these come in packs and attack on sight. People, dogs
+// (Dogmeat), brahmin, robots and plants never do.
+static bool arpg_is_monster_kind(Object* critter)
+{
+    switch (critter_kill_count_type(critter)) {
+    case KILL_TYPE_RADSCORPION:
+    case KILL_TYPE_RAT:
+    case KILL_TYPE_FLOATER:
+    case KILL_TYPE_CENTAUR:
+    case KILL_TYPE_MANTIS:
+    case KILL_TYPE_DEATH_CLAW:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static int arpg_monster_speed_pct(Object* critter)
+{
+    ArpgMonster* monster = arpg_monster(critter);
+    return monster != NULL ? monster->speedPct : 100;
+}
+
+// Log name with a rank tag: "Radscorpion", "Radscorpion[C]", "Grimspine[U]".
+static const char* arpg_label(Object* critter)
+{
+    static char buffers[2][64];
+    static int next = 0;
+    char* buffer = buffers[next];
+    next = (next + 1) % 2;
+
+    ArpgMonster* monster = arpg_monster(critter);
+    if (monster == NULL || monster->rank == RANK_NORMAL) {
+        snprintf(buffer, 64, "%s", critter_name(critter));
+    } else {
+        static const char tags[] = { 'N', 'M', 'C', 'U' };
+        snprintf(buffer, 64, "%s[%c]", monster->name, tags[monster->rank]);
+    }
+    return buffer;
+}
+
+// Our own wasteland take on D2's random unique names.
+static void arpg_unique_name(char* dest, size_t size)
+{
+    static const char* prefixes[] = { "Rot", "Rust", "Ash", "Glow", "Bone", "Grim", "Scab", "Blight", "Dust", "Gore", "Rad", "Sludge", "Char", "Gut", "Murk", "Grub" };
+    static const char* suffixes[] = { "fang", "maw", "claw", "hide", "tooth", "spine", "eye", "skull", "gut", "tail", "bite", "shell", "sting", "back", "jaw" };
+    static const char* titles[] = { "the Mutant", "the Glowing", "the Hungry", "the Ravager", "the Undying", "the Feral", "the Irradiated", "the Ancient", "the Gnawer", "the Defiler", "the Vile", "the Rabid", "the Wasteland Terror", "the Pale", "the Twice-Born" };
+    snprintf(dest, size, "%s%s %s",
+        prefixes[roll_random(0, (int)(sizeof(prefixes) / sizeof(*prefixes)) - 1)],
+        suffixes[roll_random(0, (int)(sizeof(suffixes) / sizeof(*suffixes)) - 1)],
+        titles[roll_random(0, (int)(sizeof(titles) / sizeof(*titles)) - 1)]);
+}
+
+static void arpg_make_monster(Object* critter, int rank, unsigned int affixes, int pack, Object* leader)
+{
+    ArpgMonster& monster = monsters[critter];
+    memset(&monster, 0, sizeof(monster));
+    monster.rank = rank;
+    monster.affixes = affixes;
+    monster.pack = pack;
+    monster.leader = leader;
+    monster.speedPct = 100;
+    monster.xpPct = 100;
+
+    // D2 Normal gives minions +100%, champions +200% and uniques +300% life;
+    // Fallout's guns deal single-digit damage, so the bonuses here are a
+    // notch lower to keep a unique around ten shots.
+    switch (rank) {
+    case RANK_MINION:
+        monster.hpPct = 50;
+        break;
+    case RANK_CHAMPION:
+        monster.hpPct = 150;
+        monster.dmgPct = 50;
+        monster.speedPct = 115;
+        monster.xpPct = 300;
+        break;
+    case RANK_UNIQUE:
+        monster.hpPct = 200;
+        monster.dmgPct = 50;
+        monster.speedPct = 110;
+        monster.xpPct = 500;
+        break;
+    }
+
+    if ((affixes & CHAMP_FANATIC) != 0) {
+        monster.speedPct = 175;
+    }
+    if ((affixes & CHAMP_BERSERKER) != 0) {
+        monster.dmgPct += 75;
+    }
+    if ((affixes & CHAMP_GHOSTLY) != 0) {
+        monster.speedPct = 85;
+    }
+    if ((affixes & CHAMP_POSSESSED) != 0) {
+        monster.hpPct += 100;
+    }
+    if ((affixes & AFFIX_STRONG) != 0) {
+        monster.dmgPct += 75;
+    }
+    if ((affixes & AFFIX_FAST) != 0) {
+        monster.speedPct = std::max(monster.speedPct, 150);
+    }
+
+    // Look the part: uniques glow, champions shimmer, ghosts are see-through
+    // and berserkers run red.
+    if (rank == RANK_UNIQUE) {
+        obj_set_light(critter, 4, 65536, NULL);
+    } else if (rank == RANK_CHAMPION) {
+        obj_set_light(critter, 2, 45000, NULL);
+    }
+    if ((affixes & CHAMP_GHOSTLY) != 0) {
+        critter->flags |= OBJECT_TRANS_GLASS;
+    } else if ((affixes & CHAMP_BERSERKER) != 0) {
+        critter->flags |= OBJECT_TRANS_RED;
+    }
+
+    if (rank == RANK_UNIQUE) {
+        arpg_unique_name(monster.name, sizeof(monster.name));
+    } else {
+        snprintf(monster.name, sizeof(monster.name), "%s", critter_name(critter));
+    }
+}
+
+bool arpg_monster_info(Object* critter, int* rank, char* name, int nameSize, char* mods, int modsSize)
+{
+    ArpgMonster* monster = arpg_monster(critter);
+    if (monster == NULL) {
+        *rank = RANK_NORMAL;
+        snprintf(name, nameSize, "%s", critter_name(critter));
+        mods[0] = '\0';
+        return false;
+    }
+
+    *rank = monster->rank;
+    snprintf(name, nameSize, "%s", monster->name);
+
+    int length = 0;
+    mods[0] = '\0';
+    if (monster->rank == RANK_MINION) {
+        length += snprintf(mods + length, modsSize - length, "Minion");
+    }
+    for (const auto& entry : affix_names) {
+        if ((monster->affixes & entry.flag) != 0 && length < modsSize - 1) {
+            length += snprintf(mods + length, modsSize - length, "%s%s", length > 0 ? ", " : "", entry.name);
+        }
+    }
+    return true;
+}
+
+// A free tile a few steps from `seed`, reachable on foot from it so no
+// clone ends up inside a wall or behind one.
+static int arpg_pack_tile(Object* seed)
+{
+    for (int attempt = 0; attempt < 24; attempt++) {
+        int tile = tile_num_in_direction(seed->tile, roll_random(0, 5), roll_random(1, 3));
+        if (attempt >= 12) {
+            tile = tile_num_in_direction(tile, roll_random(0, 5), 1);
+        }
+        if (tile < 0 || tile >= HEX_GRID_SIZE || tile == seed->tile) {
+            continue;
+        }
+        if (obj_blocking_at(NULL, tile, seed->elevation) != NULL) {
+            continue;
+        }
+        if (seed->elevation == obj_dude->elevation && tile_dist(tile, obj_dude->tile) < 5) {
+            continue;
+        }
+        int length = make_path(seed, seed->tile, tile, NULL, 1);
+        if (length <= 0 || length > 6) {
+            continue;
+        }
+        return tile;
+    }
+    return -1;
+}
+
+static Object* arpg_spawn_clone(Object* seed)
+{
+    int tile = arpg_pack_tile(seed);
+    if (tile == -1) {
+        return NULL;
+    }
+
+    int fid = art_id(OBJ_TYPE_CRITTER, seed->fid & 0xFFF, ANIM_STAND, (seed->fid & 0xF000) >> 12, seed->rotation + 1);
+    Object* clone;
+    if (obj_new(&clone, fid, seed->pid) == -1) {
+        return NULL;
+    }
+
+    // Never saved: packs are rolled again when the map is entered again.
+    clone->flags |= OBJECT_NO_SAVE | ARPG_OBJECT_SPAWNED;
+    clone->data.critter.combat.team = seed->data.critter.combat.team;
+    clone->data.critter.combat.aiPacket = seed->data.critter.combat.aiPacket;
+
+    Rect rect;
+    obj_set_rotation(clone, roll_random(0, ROTATION_COUNT - 1), NULL);
+    if (obj_move_to_tile(clone, tile, seed->elevation, &rect) == 0) {
+        tile_refresh_rect(&rect, seed->elevation);
+    }
+
+    stat_spawned++;
+    return clone;
+}
+
+static unsigned int arpg_roll_affixes(int count)
+{
+    unsigned int affixes = 0;
+    int total = (int)(sizeof(unique_affixes) / sizeof(*unique_affixes));
+    for (int picked = 0; picked < count;) {
+        unsigned int affix = unique_affixes[roll_random(0, total - 1)];
+        if ((affixes & affix) == 0) {
+            affixes |= affix;
+            picked++;
+        }
+    }
+    return affixes;
+}
+
+// Diablo-style population: every wild monster on the level becomes the
+// heart of a pack. Some packs are champions, a few are led by a named unique
+// with minions.
+static void arpg_populate_level()
+{
+    if (!packs_enabled) {
+        return;
+    }
+
+    int key = map_get_index_number() * 4 + map_elevation;
+    if (std::find(populated_levels.begin(), populated_levels.end(), key) != populated_levels.end()) {
+        return;
+    }
+    populated_levels.push_back(key);
+
+    // Packs don't respawn until some game time has passed since they were
+    // last spawned here (loading an older save always respawns).
+    int hour = (int)(game_time() / 36000);
+    auto last = populated_hour.find(key);
+    if (last != populated_hour.end() && hour >= last->second && hour - last->second < pack_respawn_hours) {
+        arpg_log("ARPG: packs on level %d spawned %d h ago, not respawning\n", key, hour - last->second);
+        return;
+    }
+    populated_hour[key] = hour;
+
+    std::vector<Object*> seeds;
+    for (int index = 0; index < crit_count; index++) {
+        Object* critter = crit_list[index];
+        if (critter == obj_dude || !arpg_alive(critter) || isPartyMember(critter) || arpg_is_spawned(critter)) {
+            continue;
+        }
+        if (critter->elevation != map_elevation || critter->tile == -1 || !arpg_is_monster_kind(critter)) {
+            continue;
+        }
+        if (critter->data.critter.combat.team == obj_dude->data.critter.combat.team) {
+            continue;
+        }
+        seeds.push_back(critter);
+    }
+
+    int spawned = 0;
+    int champions = 0;
+    int uniques = 0;
+    for (Object* seed : seeds) {
+        if (spawned >= max_spawns) {
+            break;
+        }
+
+        int pack = next_pack_id++;
+        arpg_make_monster(seed, RANK_NORMAL, 0, pack, NULL);
+
+        // Big monsters come in smaller groups (D2 MonStats MinGrp/MaxGrp).
+        int xp = critter_kill_exps(seed);
+        int extra;
+        if (xp >= 500) {
+            extra = roll_random(0, 1);
+        } else if (xp >= 200) {
+            extra = roll_random(1, 2);
+        } else {
+            extra = roll_random(pack_min, std::max(pack_min, pack_max));
+        }
+        extra = extra * pack_density_pct / 100;
+
+        int roll = roll_random(1, 100);
+        if (roll <= unique_pct) {
+            Object* boss = arpg_spawn_clone(seed);
+            if (boss != NULL) {
+                spawned++;
+                uniques++;
+                arpg_make_monster(boss, RANK_UNIQUE, arpg_roll_affixes(xp >= 300 ? 3 : 2), pack, NULL);
+                monsters[seed].leader = boss;
+                int minions = std::max(2, extra);
+                for (int index = 0; index < minions && spawned < max_spawns; index++) {
+                    Object* minion = arpg_spawn_clone(seed);
+                    if (minion != NULL) {
+                        spawned++;
+                        arpg_make_monster(minion, RANK_MINION, 0, pack, boss);
+                    }
+                }
+                ArpgMonster* info = arpg_monster(boss);
+                char mods[160];
+                int rank;
+                char name[48];
+                arpg_monster_info(boss, &rank, name, sizeof(name), mods, sizeof(mods));
+                arpg_log("ARPG: unique %s (%s) [%s] with %d minions\n", name, critter_name(boss), mods, minions);
+                (void)info;
+            }
+        } else if (roll <= unique_pct + champion_pct) {
+            unsigned int kind = champion_kinds[roll_random(0, (int)(sizeof(champion_kinds) / sizeof(*champion_kinds)) - 1)];
+            int count = roll_random(2, 3);
+            for (int index = 0; index < count && spawned < max_spawns; index++) {
+                Object* champion = arpg_spawn_clone(seed);
+                if (champion != NULL) {
+                    spawned++;
+                    champions++;
+                    arpg_make_monster(champion, RANK_CHAMPION, kind, pack, NULL);
+                }
+            }
+        } else {
+            for (int index = 0; index < extra && spawned < max_spawns; index++) {
+                Object* clone = arpg_spawn_clone(seed);
+                if (clone != NULL) {
+                    spawned++;
+                    arpg_make_monster(clone, RANK_NORMAL, 0, pack, NULL);
+                }
+            }
+        }
+    }
+
+    arpg_log("ARPG: populated level %d: %d seeds, %d spawned (%d champions, %d uniques)\n",
+        key, (int)seeds.size(), spawned, champions, uniques);
+
+    if (spawned > 0) {
+        arpg_refresh_list();
+    }
+}
+
+// D2 pack behaviour: when one member of a pack joins a fight, the rest of
+// the pack within earshot joins too.
+static void arpg_alert_pack(Object* critter, Object* target)
+{
+    ArpgMonster* monster = arpg_monster(critter);
+    if (monster == NULL || monster->pack == 0) {
+        return;
+    }
+    if (std::find(alerted_packs.begin(), alerted_packs.end(), monster->pack) != alerted_packs.end()) {
+        return;
+    }
+    alerted_packs.push_back(monster->pack);
+
+    int pack = monster->pack;
+    int alerted = 0;
+    for (int index = 0; index < crit_count; index++) {
+        Object* member = crit_list[index];
+        ArpgMonster* other = arpg_monster(member);
+        if (other == NULL || other->pack != pack || member == critter || !arpg_alive(member)) {
+            continue;
+        }
+        if (obj_dist(member, critter) > 15) {
+            continue;
+        }
+        if (member->data.critter.combat.whoHitMe == NULL) {
+            critter_set_who_hit_me(member, target);
+        }
+        member->data.critter.combat.maneuver |= CRITTER_MANEUVER_ENGAGING;
+        alerted++;
+    }
+    arpg_log("ARPG: pack %d alerted by %s: %d joined\n", pack, arpg_label(critter), alerted);
+}
+
+// D2 aggro: wild monsters attack whoever they can perceive nearby, script
+// or no script (pack clones have none).
+static void arpg_aggro_tick(unsigned int now)
+{
+    if (now < next_aggro_check) {
+        return;
+    }
+    next_aggro_check = now + 400;
+
+    if ((obj_dude->data.critter.combat.results & DAM_DEAD) != 0) {
+        return;
+    }
+
+    for (int index = 0; index < crit_count; index++) {
+        Object* critter = crit_list[index];
+        if (critter == obj_dude || !arpg_alive(critter) || isPartyMember(critter)) {
+            continue;
+        }
+        if (critter->data.critter.combat.whoHitMe != NULL || !arpg_is_monster_kind(critter)) {
+            continue;
+        }
+        if (critter->data.critter.combat.team == obj_dude->data.critter.combat.team) {
+            continue;
+        }
+        if (obj_dist(critter, obj_dude) > aggro_radius || !is_within_perception(critter, obj_dude)) {
+            continue;
+        }
+
+        critter_set_who_hit_me(critter, obj_dude);
+        critter->data.critter.combat.maneuver |= CRITTER_MANEUVER_ENGAGING;
+        alert_until = std::max(alert_until, now + 3000);
+        arpg_alert_pack(critter, obj_dude);
+    }
+}
+
+// Pack leader aura (D2 Might): pack members near a living Pack Leader hit
+// harder.
+static int arpg_aura_pct(Object* critter)
+{
+    ArpgMonster* monster = arpg_monster(critter);
+    if (monster == NULL || monster->leader == NULL || monster->leader == critter) {
+        return 0;
+    }
+    ArpgMonster* leader = arpg_monster(monster->leader);
+    if (leader == NULL || (leader->affixes & AFFIX_LEADER) == 0 || !arpg_alive(monster->leader)) {
+        return 0;
+    }
+    return obj_dist(critter, monster->leader) <= 8 ? 50 : 0;
+}
+
+// Champion/unique damage and life bonuses, applied before deaths are
+// decided. Extra life is a damage divisor so the shared proto is untouched.
+static void arpg_scale_damage(Attack* attack)
+{
+    ArpgMonster* attacker = arpg_monster(attack->attacker);
+    int bonus = attacker != NULL ? attacker->dmgPct + arpg_aura_pct(attack->attacker) : 0;
+    bool fire = attacker != NULL && (attacker->affixes & AFFIX_FIRE) != 0;
+
+    auto scale = [&](Object* victim, int* damage) {
+        if (*damage <= 0 || victim == NULL || FID_TYPE(victim->fid) != OBJ_TYPE_CRITTER) {
+            return;
+        }
+        double value = *damage * (100 + bonus) / 100.0;
+        if (fire) {
+            value += roll_random(2, 6);
+        }
+        ArpgMonster* defender = arpg_monster(victim);
+        if (defender != NULL) {
+            value = value * 100.0 / (100 + defender->hpPct);
+            if ((defender->affixes & AFFIX_ARMORED) != 0) {
+                value = value * 0.75;
+            }
+            if ((defender->affixes & CHAMP_BERSERKER) != 0) {
+                value = value * 1.25;
+            }
+        }
+        // Round randomly so small Fallout damage numbers don't all collapse
+        // to 1 against tough monsters (2.6 is 3 six times in ten).
+        int whole = (int)value;
+        if (roll_random(1, 1000) <= (int)((value - whole) * 1000)) {
+            whole++;
+        }
+        *damage = std::max(1, whole);
+    };
+
+    if ((attack->attackerFlags & DAM_HIT) != 0) {
+        scale(attack->defender, &(attack->defenderDamage));
+    }
+    for (int index = 0; index < attack->extrasLength; index++) {
+        scale(attack->extras[index], &(attack->extrasDamage[index]));
     }
 }
 
@@ -798,6 +1424,13 @@ static bool arpg_start_attack(Object* attacker, Object* defender, int hitMode, i
         }
     }
 
+    if (arpg_test && attacker == obj_dude) {
+        int fid = art_id(OBJ_TYPE_CRITTER, attacker->fid & 0xFFF, aa->anim, (attacker->fid & 0xF000) >> 12, attacker->rotation + 1);
+        if (!art_exists(fid)) {
+            arpg_log("ARPG: dude attack anim %d has no art (code %d, fid anim %d)\n", aa->anim, (attacker->fid & 0xF000) >> 12, FID_ANIM_TYPE(attacker->fid));
+        }
+    }
+
     if (!arpg_sequence_attack(aa)) {
         stat_attack_fail++;
         arpg_log("ARPG: attack sequence failed %s -> %s\n", critter_name(attacker), critter_name(defender));
@@ -886,6 +1519,122 @@ static void arpg_react(Attack* attack, Object* victim, int damage, int flags, in
     register_end();
 }
 
+// Fire Enchanted death: Fallout's explosion art and sound, with damage to
+// the player and party next to the corpse. Not action_explode(): that one
+// disables the interface and kills outside our damage path.
+static void arpg_death_explosion(Object* victim)
+{
+    Object* boom;
+    int fid = art_id(OBJ_TYPE_MISC, 10, 0, 0, 0);
+    if (obj_new(&boom, fid, -1) == 0) {
+        boom->flags |= OBJECT_NO_SAVE;
+        obj_turn_off(boom, NULL);
+        obj_move_to_tile(boom, victim->tile, victim->elevation, NULL);
+        register_begin(ANIMATION_REQUEST_RESERVED);
+        register_object_play_sfx(boom, "whn1xxx1", 0);
+        register_object_funset(boom, OBJECT_HIDDEN, 0);
+        register_object_animate_and_hide(boom, ANIM_STAND, 0);
+        register_object_must_erase(boom);
+        if (register_end() == -1) {
+            obj_erase_object(boom, NULL);
+        }
+    }
+
+    arpg_log("ARPG: %s explodes\n", critter_name(victim));
+
+    for (int index = 0; index < crit_count; index++) {
+        Object* critter = crit_list[index];
+        if (critter != obj_dude && !isPartyMember(critter)) {
+            continue;
+        }
+        if (!arpg_alive(critter) || critter->elevation != victim->elevation || obj_dist(critter, victim) > 2) {
+            continue;
+        }
+        if (critter == obj_dude && get_time() < dodge_until) {
+            continue;
+        }
+
+        Attack blast;
+        memset(&blast, 0, sizeof(blast));
+        combat_ctd_init(&blast, victim, critter, HIT_MODE_PUNCH, HIT_LOCATION_TORSO);
+        blast.attackerFlags = DAM_HIT;
+        blast.defenderDamage = roll_random(6, 14);
+        death_checks(&blast);
+        arpg_react(&blast, critter, blast.defenderDamage, blast.defenderFlags, 0);
+        apply_damage(&blast, false);
+
+        char text[16];
+        snprintf(text, sizeof(text), "%d", blast.defenderDamage);
+        arpg_float_text(critter, text, colorTable[31744]);
+        arpg_log("ARPG: explosion hits %s for %d\n", critter_name(critter), blast.defenderDamage);
+    }
+}
+
+// Unique modifiers that trigger when a monster hits the player.
+static void arpg_on_hit_effects(Object* attacker, int damage)
+{
+    ArpgMonster* monster = arpg_monster(attacker);
+    if (monster == NULL || monster->affixes == 0) {
+        return;
+    }
+
+    if ((monster->affixes & AFFIX_RADIOACTIVE) != 0) {
+        critter_adjust_rads(obj_dude, roll_random(4, 12));
+    }
+    if ((monster->affixes & AFFIX_VENOM) != 0) {
+        critter_adjust_poison(obj_dude, roll_random(2, 6));
+    }
+    if ((monster->affixes & (AFFIX_DRAIN | CHAMP_GHOSTLY)) != 0) {
+        energy = std::max(0.0, energy - (15 + damage));
+    }
+    if ((monster->affixes & AFFIX_VAMPIRIC) != 0 && arpg_alive(attacker)) {
+        critter_adjust_hits(attacker, std::max(1, damage / 2));
+    }
+}
+
+// A monster died to anything: rewards (D2: champions 3x and uniques 5x XP,
+// extra item picks), Fire Enchanted explosions, lights out.
+static void arpg_on_kill(Object* victim, Object* killer)
+{
+    stat_kills++;
+
+    ArpgMonster* monster = arpg_monster(victim);
+    bool byPlayer = killer == obj_dude || isPartyMember(killer);
+
+    int rolls = 1;
+    bool gear = false;
+    if (monster != NULL) {
+        if (monster->rank == RANK_CHAMPION || monster->rank == RANK_UNIQUE) {
+            Rect rect;
+            obj_set_light(victim, 0, 0, &rect);
+            tile_refresh_rect(&rect, victim->elevation);
+        }
+
+        if (monster->rank == RANK_CHAMPION) {
+            rolls = 2;
+        } else if (monster->rank == RANK_UNIQUE) {
+            rolls = 4;
+            gear = true;
+            arpg_log("ARPG: unique %s slain\n", monster->name);
+        }
+
+        if (byPlayer && monster->xpPct > 100) {
+            int bonus = critter_kill_exps(victim) * (monster->xpPct - 100) / 100;
+            if (bonus > 0) {
+                combat_give_exps(bonus);
+            }
+        }
+
+        if ((monster->affixes & AFFIX_FIRE) != 0) {
+            arpg_death_explosion(victim);
+        }
+    }
+
+    if (byPlayer && !isPartyMember(victim)) {
+        arpg_drop_loot(victim, rolls, gear);
+    }
+}
+
 static void arpg_resolve(ArpgAttack* aa)
 {
     Attack* attack = &(aa->attack);
@@ -895,6 +1644,24 @@ static void arpg_resolve(ArpgAttack* aa)
     if (attacker == NULL || defender == NULL) {
         return;
     }
+
+    // Who was already dead before this hit (two shots in flight at one
+    // target must not kill, loot or reward twice).
+    std::vector<Object*> victims;
+    std::vector<bool> wasDead;
+    auto noteVictim = [&](Object* victim) {
+        if (victim != NULL && FID_TYPE(victim->fid) == OBJ_TYPE_CRITTER) {
+            victims.push_back(victim);
+            wasDead.push_back((victim->data.critter.combat.results & DAM_DEAD) != 0);
+        }
+    };
+    noteVictim(defender);
+    for (int index = 0; index < attack->extrasLength; index++) {
+        noteVictim(attack->extras[index]);
+    }
+
+    // Champion / unique damage and life bonuses.
+    arpg_scale_damage(attack);
 
     // HP may have changed since the roll; recompute deaths.
     attack->defenderFlags &= ~DAM_DEAD;
@@ -942,8 +1709,8 @@ static void arpg_resolve(ArpgAttack* aa)
     apply_damage(attack, true);
 
     arpg_log("ARPG: %s -> %s hit=%d dmg=%d hp=%d dead=%d\n",
-        critter_name(attacker),
-        FID_TYPE(defender->fid) == OBJ_TYPE_CRITTER ? critter_name(defender) : "obj",
+        arpg_label(attacker),
+        FID_TYPE(defender->fid) == OBJ_TYPE_CRITTER ? arpg_label(defender) : "obj",
         hit ? 1 : 0,
         attack->defenderDamage,
         FID_TYPE(defender->fid) == OBJ_TYPE_CRITTER ? critter_get_hits(defender) : 0,
@@ -968,17 +1735,27 @@ static void arpg_resolve(ArpgAttack* aa)
     if (defender != obj_dude && FID_TYPE(defender->fid) == OBJ_TYPE_CRITTER) {
         if ((defender->data.critter.combat.results & DAM_DEAD) == 0) {
             defender->data.critter.combat.maneuver |= CRITTER_MANEUVER_ENGAGING;
+            // Shooting one member of a pack brings the whole pack.
+            if (attacker == obj_dude || isPartyMember(attacker)) {
+                arpg_alert_pack(defender, attacker);
+            }
         }
     }
 
-    if ((defender->data.critter.combat.results & DAM_DEAD) != 0 && defender != obj_dude) {
-        stat_kills++;
-        if ((attacker == obj_dude || isPartyMember(attacker)) && !isPartyMember(defender)) {
-            arpg_drop_loot(defender);
+    // Monster modifiers that trigger on a hit on the player.
+    if (hit && defender == obj_dude && attack->defenderDamage > 0) {
+        arpg_on_hit_effects(attacker, attack->defenderDamage);
+    }
+
+    for (size_t index = 0; index < victims.size(); index++) {
+        Object* victim = victims[index];
+        if (!wasDead[index] && victim != obj_dude && (victim->data.critter.combat.results & DAM_DEAD) != 0) {
+            arpg_on_kill(victim, attacker);
         }
     }
 
-    if (attacker == obj_dude && (defender->data.critter.combat.results & DAM_DEAD) != 0) {
+    if (attacker == obj_dude && FID_TYPE(defender->fid) == OBJ_TYPE_CRITTER
+        && (defender->data.critter.combat.results & DAM_DEAD) != 0) {
         player_target = NULL;
         player_chasing = false;
     }
@@ -1203,11 +1980,18 @@ static void arpg_player_tick(unsigned int now)
 
     if (rc == COMBAT_BAD_SHOT_NO_AMMO) {
         Object* weapon = item_hit_with(obj_dude, hitMode);
-        if (weapon != NULL && !anim_busy(obj_dude) && item_w_try_reload(obj_dude, weapon) == 0) {
+        if (weapon != NULL && anim_busy(obj_dude)) {
+            // Reload as soon as the current hit reaction or attack is over;
+            // in a crowd that's most of the time.
+            return;
+        }
+
+        if (weapon != NULL && item_w_try_reload(obj_dude, weapon) == 0) {
             intface_update_ammo_lights();
             const char* sfx = gsnd_build_weapon_sfx_name(WEAPON_SOUND_EFFECT_READY, weapon, hitMode, NULL);
             gsound_play_sfx_file(sfx);
             player_next_attack = now + 600;
+            arpg_log("ARPG: reloaded %s (%d)\n", item_name(weapon), item_w_curr_ammo(weapon));
             return;
         }
 
@@ -1429,7 +2213,10 @@ static Object* arpg_drop_item(Object* corpse, int pid, int quantity)
     return item;
 }
 
-static void arpg_drop_loot(Object* victim)
+// Diablo-style drops. `rolls` is the number of item picks (D2 treasure class
+// picks: champions get more, uniques more still and always some gear).
+// Spawned pack fodder drops less often, so packs don't flood the floor.
+static void arpg_drop_loot(Object* victim, int rolls, bool guaranteedGear)
 {
     if (!loot_drops) {
         return;
@@ -1440,44 +2227,52 @@ static void arpg_drop_loot(Object* victim)
     }
 
     int xp = critter_kill_exps(victim);
-
-    if (roll_random(1, 100) <= 55 * loot_pct / 100) {
-        arpg_drop_item(victim, PROTO_ID_MONEY, roll_random(1, 3 + xp / 3));
+    ArpgMonster* monster = arpg_monster(victim);
+    int pct = loot_pct;
+    if (arpg_is_spawned(victim) && (monster == NULL || monster->rank == RANK_NORMAL || monster->rank == RANK_MINION)) {
+        pct = pct / 2;
     }
 
-    if (roll_random(1, 100) <= 10 * loot_pct / 100) {
-        arpg_drop_item(victim, PROTO_ID_STIMPACK, 1);
-    }
+    for (int roll = 0; roll < rolls; roll++) {
+        if (roll_random(1, 100) <= 55 * pct / 100) {
+            arpg_drop_item(victim, PROTO_ID_MONEY, roll_random(1, 3 + xp / 3));
+        }
 
-    if (roll_random(1, 100) <= 20 * loot_pct / 100) {
-        int hitMode;
-        bool aiming;
-        if (intface_get_attack(&hitMode, &aiming) != -1) {
-            Object* weapon = item_hit_with(obj_dude, hitMode);
-            if (weapon != NULL && item_w_max_ammo(weapon) > 0) {
-                int ammoPid = item_w_ammo_pid(weapon);
-                if (ammoPid > 0) {
-                    arpg_drop_item(victim, ammoPid, 1);
+        if (roll_random(1, 100) <= 10 * pct / 100) {
+            arpg_drop_item(victim, PROTO_ID_STIMPACK, 1);
+        }
+
+        if (roll_random(1, 100) <= 20 * pct / 100) {
+            int hitMode;
+            bool aiming;
+            if (intface_get_attack(&hitMode, &aiming) != -1) {
+                Object* weapon = item_hit_with(obj_dude, hitMode);
+                if (weapon != NULL && item_w_max_ammo(weapon) > 0) {
+                    int ammoPid = item_w_ammo_pid(weapon);
+                    if (ammoPid > 0) {
+                        arpg_drop_item(victim, ammoPid, 1);
+                    }
                 }
             }
         }
-    }
 
-    int gearChance = (8 + std::min(xp / 20, 15)) * loot_pct / 100;
-    if (!loot_table.empty() && roll_random(1, 100) <= gearChance) {
-        int budget = 300 + xp * 25;
-        std::vector<int> eligible;
-        for (int pid : loot_table) {
-            Proto* proto;
-            if (proto_ptr(pid, &proto) != -1 && proto->item.cost <= budget) {
-                eligible.push_back(pid);
+        int gearChance = (8 + std::min(xp / 20, 15)) * pct / 100;
+        bool forced = guaranteedGear && roll == 0;
+        if (!loot_table.empty() && (forced || roll_random(1, 100) <= gearChance)) {
+            int budget = (300 + xp * 25) * (guaranteedGear ? 2 : 1);
+            std::vector<int> eligible;
+            for (int pid : loot_table) {
+                Proto* proto;
+                if (proto_ptr(pid, &proto) != -1 && proto->item.cost <= budget) {
+                    eligible.push_back(pid);
+                }
             }
-        }
-        if (!eligible.empty()) {
-            int pid = eligible[roll_random(0, (int)eligible.size() - 1)];
-            Object* item = arpg_drop_item(victim, pid, 1);
-            if (item != NULL) {
-                arpg_log("ARPG: %s dropped %s\n", critter_name(victim), item_name(item));
+            if (!eligible.empty()) {
+                int pid = eligible[roll_random(0, (int)eligible.size() - 1)];
+                Object* item = arpg_drop_item(victim, pid, 1);
+                if (item != NULL) {
+                    arpg_log("ARPG: %s dropped %s\n", critter_name(victim), item_name(item));
+                }
             }
         }
     }
@@ -1580,6 +2375,49 @@ static int arpg_pick_hit_mode(Object* critter, ArpgActor* actor)
     return HIT_MODE_PUNCH;
 }
 
+// Phasing (D2 Teleport): blink next to a target that is out of reach.
+static bool arpg_try_phase(Object* critter, Object* target, unsigned int now)
+{
+    ArpgMonster* monster = arpg_monster(critter);
+    if (monster == NULL || (monster->affixes & AFFIX_PHASING) == 0 || now < monster->nextPhase) {
+        return false;
+    }
+    if (obj_dist(critter, target) < 4 || (critter->data.critter.combat.results & DAM_KNOCKED_DOWN) != 0) {
+        return false;
+    }
+
+    for (int attempt = 0; attempt < 12; attempt++) {
+        int tile = tile_num_in_direction(target->tile, roll_random(0, 5), roll_random(1, 2));
+        if (tile < 0 || tile >= HEX_GRID_SIZE || obj_blocking_at(NULL, tile, target->elevation) != NULL) {
+            continue;
+        }
+        if (make_path(critter, tile, target->tile, NULL, 0) <= 0) {
+            continue;
+        }
+
+        if (register_clear(critter) == -2) {
+            return false;
+        }
+
+        Rect oldRect;
+        obj_bound(critter, &oldRect);
+        Rect newRect;
+        obj_move_to_tile(critter, tile, target->elevation, &newRect);
+        obj_set_rotation(critter, tile_dir(tile, target->tile), NULL);
+        tile_refresh_rect(&oldRect, critter->elevation);
+        tile_refresh_rect(&newRect, critter->elevation);
+
+        monster->nextPhase = now + 4000;
+        arpg_float_text(critter, "*phase*", colorTable[992]);
+        gsound_play_sfx_file("electri1");
+        arpg_log("ARPG: %s phases to %d\n", monster->name, tile);
+        return true;
+    }
+
+    monster->nextPhase = now + 1000;
+    return false;
+}
+
 static void arpg_critter_tick(Object* critter, unsigned int now)
 {
     ArpgActor& actor = actors[critter];
@@ -1624,6 +2462,10 @@ static void arpg_critter_tick(Object* critter, unsigned int now)
 
     combat->maneuver |= CRITTER_MANEUVER_ENGAGING;
 
+    if (target == obj_dude || isPartyMember(target)) {
+        arpg_alert_pack(critter, target);
+    }
+
     int hitMode = arpg_pick_hit_mode(critter, &actor);
     int rc = arpg_bad_shot(critter, target, hitMode);
 
@@ -1646,6 +2488,9 @@ static void arpg_critter_tick(Object* critter, unsigned int now)
     }
 
     if (rc == COMBAT_BAD_SHOT_OUT_OF_RANGE || rc == COMBAT_BAD_SHOT_AIM_BLOCKED) {
+        if (arpg_try_phase(critter, target, now)) {
+            return;
+        }
         if (!anim_busy(critter) || now >= actor.nextRepath) {
             arpg_move_towards(critter, target);
             actor.nextRepath = now + 1200;
@@ -1667,7 +2512,8 @@ static void arpg_critter_tick(Object* critter, unsigned int now)
     }
 
     if (arpg_start_attack(critter, target, hitMode)) {
-        actor.nextAttack = now + arpg_attack_delay(critter, hitMode);
+        // Extra Fast / Fanatic monsters attack more often.
+        actor.nextAttack = now + arpg_attack_delay(critter, hitMode) * 100 / arpg_monster_speed_pct(critter);
     }
 }
 
@@ -1681,14 +2527,23 @@ void arpg_tick()
 
     int mapIndex = map_get_index_number();
     if (mapIndex != last_map || map_elevation != last_elevation) {
-        arpg_reset();
+        arpg_reset_level();
         last_map = mapIndex;
         last_elevation = map_elevation;
+        // Spawn packs once the level has settled (scripts may still be
+        // placing or removing critters on the first frames).
+        populate_pending = true;
+        populate_time = now + 500;
     }
 
     if (now >= next_list_refresh) {
         arpg_refresh_list();
         next_list_refresh = now + 1000;
+    }
+
+    if (populate_pending && now >= populate_time) {
+        populate_pending = false;
+        arpg_populate_level();
     }
 
     // Resolve hits queued by animation callbacks.
@@ -1738,7 +2593,76 @@ void arpg_tick()
             dump_screen();
         }
 
+        // Watchdog: an attack animation that has been playing for seconds
+        // means a sequence is stuck. Dump it once.
+        static unsigned int busySince = 0;
+        static int dumps = 0;
+        int dudeAnim = FID_ANIM_TYPE(obj_dude->fid);
+        bool attackAnim = dudeAnim == ANIM_POINT || dudeAnim == ANIM_UNPOINT || dudeAnim == ANIM_FIRE_SINGLE || dudeAnim == ANIM_FIRE_BURST;
+        if (anim_busy(obj_dude) && attackAnim) {
+            if (busySince == 0) {
+                busySince = now;
+            } else if (now - busySince > 3000 && dumps < 3) {
+                dumps++;
+                busySince = now;
+                arpg_log("ARPG watchdog: dude stuck in anim %d for 3 s, frame %d\n", dudeAnim, obj_dude->frame);
+                anim_debug_dump(obj_dude, [](const char* line) { arpg_log("%s", line); });
+            }
+        } else {
+            busySince = 0;
+        }
+
+        static unsigned int nextCensus = 0;
+        if (now >= nextCensus) {
+            nextCensus = now + 10000;
+            int alive[4] = { 0 };
+            int engaged[4] = { 0 };
+            for (int index = 0; index < crit_count; index++) {
+                Object* critter = crit_list[index];
+                if (critter == obj_dude || !arpg_alive(critter)) {
+                    continue;
+                }
+                ArpgMonster* monster = arpg_monster(critter);
+                int rank = monster != NULL ? monster->rank : RANK_NORMAL;
+                alive[rank]++;
+                if (arpg_is_engaged(critter)) {
+                    engaged[rank]++;
+                }
+            }
+            arpg_log("ARPG census: alive N%d M%d C%d U%d, engaged N%d M%d C%d U%d, dude hp=%d\n",
+                alive[0], alive[1], alive[2], alive[3], engaged[0], engaged[1], engaged[2], engaged[3], critter_get_hits(obj_dude));
+            int hitMode;
+            bool aiming;
+            intface_get_attack(&hitMode, &aiming);
+            arpg_log("ARPG census: dude target=%s dist=%d rc=%d busy=%d anim=%d results=0x%x next_attack_in=%d chasing=%d in_place=%d\n",
+                player_target != NULL ? arpg_label(player_target) : "-",
+                player_target != NULL ? obj_dist(obj_dude, player_target) : -1,
+                player_target != NULL ? arpg_bad_shot(obj_dude, player_target, hitMode) : -1,
+                anim_busy(obj_dude),
+                FID_ANIM_TYPE(obj_dude->fid),
+                obj_dude->data.critter.combat.results,
+                (int)(player_next_attack - now),
+                player_chasing ? 1 : 0,
+                player_in_place ? 1 : 0);
+            Object* nearest = NULL;
+            for (int index = 0; index < crit_count; index++) {
+                Object* critter = crit_list[index];
+                if (arpg_is_attackable(critter) && (nearest == NULL || obj_dist(critter, obj_dude) < obj_dist(nearest, obj_dude))) {
+                    nearest = critter;
+                }
+            }
+            Object* weapon = item_hit_with(obj_dude, hitMode);
+            arpg_log("ARPG census: hitMode=%d weapon=%s ammo=%d nearest=%s dist=%d rc=%d\n",
+                hitMode,
+                weapon != NULL ? item_name(weapon) : "-",
+                weapon != NULL ? item_w_curr_ammo(weapon) : -1,
+                nearest != NULL ? arpg_label(nearest) : "-",
+                nearest != NULL ? obj_dist(nearest, obj_dude) : -1,
+                nearest != NULL ? arpg_bad_shot(obj_dude, nearest, hitMode) : -1);
+        }
+
         if (autotest_seconds > 0 && now - autotest_start > (unsigned int)autotest_seconds * 1000) {
+            arpg_log("ARPG autotest done: unfired=%d spawned=%d\n", stat_unfired, stat_spawned);
             arpg_log("ARPG autotest done: dude hp=%d/%d xp=%d attacks=%d failed=%d react_blocked=%d kills=%d wasd_shots=%d latency_ms=%d\n",
                 critter_get_hits(obj_dude),
                 stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS),
@@ -1765,7 +2689,8 @@ void arpg_tick()
             if (autotest_ammo_pid != -1) {
                 Object* ammo;
                 if (obj_pid_new(&ammo, autotest_ammo_pid) == 0) {
-                    if (item_add_force(obj_dude, ammo, 5) == 0) {
+                    // Packs mean long fights: bring plenty.
+                    if (item_add_force(obj_dude, ammo, 25) == 0) {
                         obj_disconnect(ammo, NULL);
                     }
                 }
@@ -1834,6 +2759,12 @@ void arpg_tick()
         dodge_until = now + 60000;
     }
 
+    if (arpg_test && autotest_god && critter_get_hits(obj_dude) < stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS) / 2) {
+        // Feature tests: keep the bot alive so long fights can be observed.
+        critter_adjust_hits(obj_dude, stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS));
+        intface_update_hit_points(false);
+    }
+
     if (autoplay) {
         // Test bot drinks a "potion" (Q) at low life.
         static unsigned int nextHeal = 0;
@@ -1892,8 +2823,9 @@ void arpg_tick()
                 Object* critter = crit_list[index];
                 // can_see() depends on facing; a WASD runner shoots at
                 // anything in its line of fire, behind it included.
+                int shot = controls == ARPG_CONTROLS_WASD ? arpg_bad_shot(obj_dude, critter, HIT_MODE_LEFT_WEAPON_PRIMARY) : -1;
                 bool visible = controls == ARPG_CONTROLS_WASD
-                    ? arpg_bad_shot(obj_dude, critter, HIT_MODE_LEFT_WEAPON_PRIMARY) == COMBAT_BAD_SHOT_OK
+                    ? shot == COMBAT_BAD_SHOT_OK || shot == COMBAT_BAD_SHOT_NO_AMMO
                     : can_see(obj_dude, critter);
                 if (arpg_is_attackable(critter) && obj_dist(critter, obj_dude) <= 12 && visible
                     && !(critter == player_unreachable && now < player_unreachable_until)) {
@@ -1947,6 +2879,8 @@ void arpg_tick()
         arpg_log("ARPG: player knockout downgraded to knockdown\n");
     }
 
+    arpg_aggro_tick(now);
+
     bool alert = now < alert_until;
     bool joinCheck = alert && now >= next_join_check;
     if (joinCheck) {
@@ -1985,11 +2919,6 @@ void arpg_tick()
     if (anyEngaged) {
         alert_until = std::max(alert_until, now + 3000);
     }
-}
-
-static int arpg_monster_speed_pct(Object* critter)
-{
-    return 100;
 }
 
 bool arpg_is_engaged(Object* critter)

@@ -72,6 +72,11 @@ int arpg_anim_speed_pct(Object* obj, int fid);
 // True for monsters spawned by the pack system (never saved).
 bool arpg_is_spawned(Object* obj);
 
+// Diablo-style monster rank for the HUD: 0 normal, 1 minion, 2 champion,
+// 3 unique. Fills the display name and the modifier list ("Champion",
+// "Extra Fast, Fire Enchanted"). Returns false for ordinary critters.
+bool arpg_monster_info(Object* critter, int* rank, char* name, int nameSize, char* mods, int modsSize);
+
 // Hotkeys.
 void arpg_quick_heal();
 void arpg_quick_reload();

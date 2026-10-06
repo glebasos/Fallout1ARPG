@@ -455,6 +455,53 @@ int register_clear(Object* a1)
     return -1;
 }
 
+// ARPG debugging: describes every sequence and sad entry involving `obj`.
+void anim_debug_dump(Object* obj, void (*log)(const char* line))
+{
+    char line[256];
+    for (int index = 0; index < ANIMATION_SEQUENCE_LIST_CAPACITY; index++) {
+        AnimationSequence* sequence = &(anim_set[index]);
+        if (sequence->field_0 == -1000) {
+            continue;
+        }
+
+        bool involved = false;
+        for (int d = 0; d < sequence->length; d++) {
+            AnimationDescription* description = &(sequence->animations[d]);
+            if (description->kind != ANIM_KIND_CALLBACK && description->kind != ANIM_KIND_CALLBACK3 && description->owner == obj) {
+                involved = true;
+            }
+        }
+        if (!involved) {
+            continue;
+        }
+
+        snprintf(line, sizeof(line), "seq %d field_0=%d index=%d length=%d flags=0x%x\n",
+            index, sequence->field_0, sequence->animationIndex, sequence->length, sequence->flags);
+        log(line);
+        for (int d = 0; d < sequence->length; d++) {
+            AnimationDescription* description = &(sequence->animations[d]);
+            bool callback = description->kind == ANIM_KIND_CALLBACK || description->kind == ANIM_KIND_CALLBACK3;
+            snprintf(line, sizeof(line), "  [%d] kind=%d owner=%s anim=%d delay=%d\n",
+                d, description->kind,
+                callback ? "(callback)" : (description->owner == obj ? "self" : "other"),
+                callback ? -1 : description->anim,
+                description->delay);
+            log(line);
+        }
+    }
+
+    for (int index = 0; index < curr_sad; index++) {
+        AnimationSad* entry = &(sad[index]);
+        if (entry->obj == obj || (entry->animationSequenceIndex >= 0 && entry->obj != NULL && FID_TYPE(entry->obj->fid) == OBJ_TYPE_MISC)) {
+            snprintf(line, sizeof(line), "  sad %d obj=%s seq=%d fid=0x%x anim=%d field_1C=%d field_20=%d flags=0x%x frame=%d tpf=%u\n",
+                index, entry->obj == obj ? "self" : "misc", entry->animationSequenceIndex, entry->fid, FID_ANIM_TYPE(entry->fid),
+                entry->field_1C, entry->field_20, entry->flags, entry->obj->frame, entry->ticksPerFrame);
+            log(line);
+        }
+    }
+}
+
 // ARPG: same as register_clear, but also ends prioritized sequences.
 int register_clear_force(Object* a1)
 {

@@ -263,6 +263,7 @@ static bool rmb_toggles_mode = false;
 static bool hold_to_move = true;
 static bool loot_drops = true;
 static bool auto_caps = true;
+static bool auto_consumables = true;
 
 // D2 death: a killing blow downs the player, who rises again at the map
 // entrance a few seconds later, poorer.
@@ -695,6 +696,7 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "enemy_outline", &enemy_outline);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "loot_drops", &loot_drops);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "auto_caps", &auto_caps);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "auto_consumables", &auto_consumables);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "respawn", &respawn_enabled);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "respawn_caps_pct", &respawn_caps_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "loot_pct", &loot_pct);
@@ -3981,11 +3983,28 @@ static void arpg_gear_tick(unsigned int now)
     }
 }
 
-// D2 gold: caps lying next to the player are picked up just by walking past.
+// Consumables that are auto-picked like caps: everything the 1-5 flasks drink.
+static const int auto_pickup_pids[] = {
+    PROTO_ID_SUPER_STIMPACK, PROTO_ID_STIMPACK, PROTO_ID_RADAWAY, 109 /* Rad-X */,
+    PROTO_ID_BUFF_OUT, PROTO_ID_MENTATS, PROTO_ID_PSYCHO, PROTO_ID_NUKA_COLA
+};
+
+static bool arpg_is_auto_consumable(int pid)
+{
+    for (int candidate : auto_pickup_pids) {
+        if (candidate == pid) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// D2 gold and potions: caps and flask consumables lying next to the player are
+// picked up just by walking past.
 static void arpg_caps_tick(unsigned int now)
 {
     static unsigned int next = 0;
-    if (!auto_caps || now < next) {
+    if ((!auto_caps && !auto_consumables) || now < next) {
         return;
     }
     next = now + 200;
@@ -3996,21 +4015,48 @@ static void arpg_caps_tick(unsigned int now)
 
     std::vector<Object*> found;
     for (Object* obj = obj_find_first_at(obj_dude->elevation); obj != NULL; obj = obj_find_next_at()) {
-        if (obj->pid == PROTO_ID_MONEY && obj->owner == NULL && (obj->flags & OBJECT_HIDDEN) == 0
+        bool wanted = (auto_caps && obj->pid == PROTO_ID_MONEY)
+            || (auto_consumables && arpg_is_auto_consumable(obj->pid));
+        if (wanted && obj->owner == NULL && (obj->flags & OBJECT_HIDDEN) == 0
             && obj->tile != -1 && tile_dist(obj->tile, obj_dude->tile) <= 2) {
             found.push_back(obj);
         }
     }
 
-    for (Object* caps : found) {
-        int amount = item_caps_get_amount(caps);
-        if (obj_pickup(obj_dude, caps) == 0 && caps->owner == obj_dude) {
-            char text[32];
-            snprintf(text, sizeof(text), "+%d caps", amount);
-            arpg_float_text(obj_dude, text, colorTable[32256]);
+    // obj_pickup can merge the picked object into an inventory stack and free
+    // it, so success is measured on the inventory and the object is never
+    // touched after the call.
+    for (Object* item : found) {
+        int pid = item->pid;
+        if (pid == PROTO_ID_MONEY) {
+            int before = item_caps_total(obj_dude);
+            obj_pickup(obj_dude, item);
+            int amount = item_caps_total(obj_dude) - before;
+            if (amount > 0) {
+                char text[32];
+                snprintf(text, sizeof(text), "+%d caps", amount);
+                arpg_float_text(obj_dude, text, colorTable[32256]);
+                gsound_play_sfx_file("ib1p1xx1");
+                intface_update_items(false);
+                arpg_log("ARPG: picked up %d caps\n", amount);
+            }
+            continue;
+        }
+
+        // Skip silently when too heavy (obj_pickup would print every tick).
+        if (item_total_weight(obj_dude) + item_weight(item) > stat_level(obj_dude, STAT_CARRY_WEIGHT)) {
+            continue;
+        }
+
+        char name[64];
+        snprintf(name, sizeof(name), "+%s", item_name(item));
+        int before = inven_pid_quantity_carried(obj_dude, pid);
+        obj_pickup(obj_dude, item);
+        if (inven_pid_quantity_carried(obj_dude, pid) > before) {
+            arpg_float_text(obj_dude, name, colorTable[992]);
             gsound_play_sfx_file("ib1p1xx1");
             intface_update_items(false);
-            arpg_log("ARPG: picked up %d caps\n", amount);
+            arpg_log("ARPG: picked up %s\n", name + 1);
         }
     }
 }

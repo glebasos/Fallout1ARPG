@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <unordered_set>
 #include <vector>
 
 #include "game/arpg.h"
@@ -1517,9 +1518,17 @@ static void hud_update_labels(unsigned int now)
         highlights_on = highlight;
     }
 
-    // Drop labels of items that were picked up.
+    // Drop labels of items that were picked up. A pickup can merge the item
+    // into an inventory stack and free it, so pointers are checked against
+    // the live object list before being read.
+    std::unordered_set<Object*> onGround;
+    if (!labeled_items.empty()) {
+        for (Object* obj = obj_find_first_at(map_elevation); obj != NULL; obj = obj_find_next_at()) {
+            onGround.insert(obj);
+        }
+    }
     for (auto it = labeled_items.begin(); it != labeled_items.end();) {
-        if ((*it)->owner != NULL) {
+        if (onGround.find(*it) == onGround.end() || (*it)->owner != NULL) {
             text_object_remove(*it);
             it = labeled_items.erase(it);
         } else {

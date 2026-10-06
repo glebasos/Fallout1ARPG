@@ -12,6 +12,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <SDL.h>
+
 #include "game/actions.h"
 #include "game/anim.h"
 #include "game/art.h"
@@ -4686,16 +4688,24 @@ void arpg_tick()
             nextSwap = now + autotest_swap;
         }
 
-        // Zoom test: wheel steps through the levels; each time the mouse is put
-        // on the player's screen position and must map back to its tile.
+        // Zoom test: a real SDL wheel notch every 3.5 s (through
+        // game_handle_input), up to 200%, down to 50% and back. Before each
+        // notch it logs the zoom the previous one gave, the frame rate since,
+        // and whether the mouse put on the player maps back to its tile.
         static int zoomStep = 0;
         static unsigned int nextZoom = 0;
+        static int zoomFrames = 0;
+        static int zoomBefore = 0;
+        static int zoomDelta = 0;
+        zoomFrames++;
         if (autotest_zoom && now - autotest_start > 3000 && now >= nextZoom) {
             static const int deltas[] = { 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 1, 1, 1, 1, 1 };
-            if (zoomStep < (int)(sizeof(deltas) / sizeof(deltas[0]))) {
-                arpg_zoom_step(deltas[zoomStep]);
-                zoomStep++;
+            if (zoomDelta != 0) {
+                arpg_log("ARPG autotest: wheel %+d: zoom %d%% -> %d%%, %.1f fps\n",
+                    zoomDelta, zoomBefore, arpg_zoom_pct(), zoomFrames * 1000.0 / 3500.0);
             }
+            zoomFrames = 0;
+            zoomDelta = 0;
             int x;
             int y;
             if (tile_coord(obj_dude->tile, &x, &y, obj_dude->elevation) == 0) {
@@ -4712,6 +4722,15 @@ void arpg_tick()
                 int tile = tile_num(wx, wy, obj_dude->elevation);
                 arpg_log("ARPG autotest: zoom %d%% render %dx%d dude screen %d,%d mouse tile %d dude tile %d %s\n",
                     arpg_zoom_pct(), viewW, viewH, sx, sy, tile, obj_dude->tile, tile == obj_dude->tile ? "OK" : "MISMATCH");
+            }
+            if (zoomStep < (int)(sizeof(deltas) / sizeof(deltas[0]))) {
+                zoomBefore = arpg_zoom_pct();
+                zoomDelta = deltas[zoomStep];
+                SDL_Event event = {};
+                event.type = SDL_MOUSEWHEEL;
+                event.wheel.y = zoomDelta;
+                SDL_PushEvent(&event);
+                zoomStep++;
             }
             nextZoom = now + 3500;
         }
@@ -5550,7 +5569,21 @@ static void arpg_camera_follow()
     }
 
     if (dx != 0 || dy != 0) {
-        map_scroll(dx, dy);
+        int rc = map_scroll(dx, dy);
+        if (rc == -1 && arpg_zoom_pct() > 100) {
+            // Fallout's scroll blockers keep a 640x480 view inside the map.
+            // A zoomed-in view is smaller, so near the edges the player could
+            // run out of it: step toward them past the blockers (the view
+            // then only reaches half a zoomed view past the player).
+            int cx;
+            int cy;
+            tile_coord(tile_center_tile, &cx, &cy, obj_dude->elevation);
+            int tile = tile_num(cx + dx * 32 + 16, cy + dy * 24 + 8, obj_dude->elevation);
+            if (tile != -1) {
+                gmouse_3d_off();
+                tile_set_center(tile, TILE_SET_CENTER_FLAG_IGNORE_SCROLL_RESTRICTIONS | TILE_SET_CENTER_REFRESH_WINDOW);
+            }
+        }
     }
 }
 

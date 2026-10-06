@@ -11,6 +11,7 @@
 #include "game/arpg.h"
 #include "game/critter.h"
 #include "game/gconfig.h"
+#include "game/gmouse.h"
 #include "game/intface.h"
 #include "game/item.h"
 #include "game/map.h"
@@ -225,6 +226,154 @@ static void hud_update_globes()
 }
 
 // ---------------------------------------------------------------------------
+// Diablo II target bar: the monster under the cursor (or the one being
+// attacked) at the top of the screen, its name coloured by rank (white,
+// blue champion, gold unique), its modifiers and a draining life bar.
+// ---------------------------------------------------------------------------
+
+#define BAR_WIDTH 340
+#define BAR_HEIGHT 36
+
+static int bar_window = -1;
+static Object* bar_critter = NULL;
+static int bar_last_hp = -1;
+static unsigned int bar_next_draw = 0;
+
+static void bar_destroy()
+{
+    if (bar_window != -1) {
+        win_delete(bar_window);
+        bar_window = -1;
+    }
+    bar_critter = NULL;
+    bar_last_hp = -1;
+}
+
+static Object* bar_focus()
+{
+    Object* critter = object_under_mouse(OBJ_TYPE_CRITTER, false, map_elevation);
+    if (critter != NULL && critter != obj_dude && FID_TYPE(critter->fid) == OBJ_TYPE_CRITTER
+        && (critter->data.critter.combat.results & DAM_DEAD) == 0
+        && (critter->flags & OBJECT_HIDDEN) == 0) {
+        return critter;
+    }
+    return arpg_player_target();
+}
+
+static void bar_text(unsigned char* buf, const char* text, int y, int color)
+{
+    char line[96];
+    snprintf(line, sizeof(line), "%s", text);
+    // Shorten from the end until it fits.
+    while (text_width(line) > BAR_WIDTH - 8 && strlen(line) > 4) {
+        size_t length = strlen(line);
+        line[length - 4] = '.';
+        line[length - 3] = '.';
+        line[length - 2] = '\0';
+    }
+    int x = (BAR_WIDTH - text_width(line)) / 2;
+    text_to_buf(buf + (y + 1) * BAR_WIDTH + x + 1, line, BAR_WIDTH - x - 1, BAR_WIDTH, colorTable[0]);
+    text_to_buf(buf + y * BAR_WIDTH + x, line, BAR_WIDTH - x, BAR_WIDTH, color);
+}
+
+static void bar_draw(Object* critter)
+{
+    unsigned char* buf = win_get_buf(bar_window);
+    if (buf == NULL) {
+        return;
+    }
+
+    int rank;
+    char name[64];
+    char mods[160];
+    arpg_monster_info(critter, &rank, name, sizeof(name), mods, sizeof(mods));
+
+    int hp = std::max(0, critter_get_hits(critter));
+    int maxHp = std::max(1, stat_level(critter, STAT_MAXIMUM_HIT_POINTS));
+    double frac = std::min(1.0, (double)hp / maxHp);
+
+    memset(buf, colorTable[0], BAR_WIDTH * BAR_HEIGHT);
+
+    // Frame and life bar.
+    int barTop = 2;
+    int barBottom = 17;
+    int barLeft = 2;
+    int barRight = BAR_WIDTH - 3;
+    int fill = barLeft + (int)((barRight - barLeft) * frac);
+    for (int y = barTop; y <= barBottom; y++) {
+        for (int x = barLeft; x <= barRight; x++) {
+            int color;
+            if (y == barTop || y == barBottom || x == barLeft || x == barRight) {
+                color = rgb5(16, 13, 8);
+            } else if (x < fill) {
+                // Darker towards the bottom, a light line on top.
+                int shade = y == barTop + 1 ? 30 : 24 - (y - barTop) / 2;
+                color = rgb5(shade, 2, 2);
+            } else {
+                color = rgb5(5, 1, 1);
+            }
+            buf[y * BAR_WIDTH + x] = (unsigned char)color;
+        }
+    }
+
+    int nameColor;
+    switch (rank) {
+    case 2:
+        nameColor = rgb5(12, 16, 31); // champion blue
+        break;
+    case 3:
+        nameColor = rgb5(31, 24, 8); // unique gold
+        break;
+    default:
+        nameColor = colorTable[32767];
+        break;
+    }
+
+    int oldFont = text_curr();
+    text_font(101);
+    int textHeight = text_height();
+    bar_text(buf, name, barTop + (barBottom - barTop + 1 - textHeight) / 2, nameColor);
+    if (mods[0] != '\0') {
+        bar_text(buf, mods, barBottom + 3, rank == 3 ? rgb5(31, 24, 8) : rgb5(12, 16, 31));
+    }
+    text_font(oldFont);
+
+    win_draw(bar_window);
+}
+
+static void hud_update_bar(unsigned int now)
+{
+    Object* critter = NULL;
+    if (intface_is_enabled() && !intface_is_hidden()) {
+        critter = bar_focus();
+    }
+
+    if (critter == NULL) {
+        if (bar_window != -1) {
+            bar_destroy();
+        }
+        return;
+    }
+
+    if (bar_window == -1) {
+        int x = (screenGetWidth() - BAR_WIDTH) / 2;
+        bar_window = win_add(x, 6, BAR_WIDTH, BAR_HEIGHT, colorTable[0], 0);
+        if (bar_window == -1) {
+            return;
+        }
+        bar_critter = NULL;
+    }
+
+    int hp = critter_get_hits(critter);
+    if (critter != bar_critter || hp != bar_last_hp || now >= bar_next_draw) {
+        bar_critter = critter;
+        bar_last_hp = hp;
+        bar_next_draw = now + 500;
+        bar_draw(critter);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Alt item labels
 // ---------------------------------------------------------------------------
 
@@ -363,11 +512,13 @@ void arpg_hud_tick(unsigned int now)
     }
 
     hud_update_labels(now);
+    hud_update_bar(now);
 }
 
 void arpg_hud_reset()
 {
     hud_destroy_windows();
+    bar_destroy();
     hud_hidden = false;
     labels_clear();
     labels_on = false;

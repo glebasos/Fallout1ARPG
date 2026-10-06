@@ -46,6 +46,7 @@ bool arpg_handle_key(int key);
 // Player intent.
 void arpg_player_attack(Object* target, bool inPlace = false);
 void arpg_player_clear_target();
+Object* arpg_player_target();
 void arpg_player_special(Object* target, bool inPlace = false);
 Object* arpg_target_near_cursor();
 int arpg_energy();

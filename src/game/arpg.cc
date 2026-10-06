@@ -1919,6 +1919,11 @@ static void arpg_player_aimed(Object* target, int hitLocation)
     player_aim_location = hitLocation;
 }
 
+Object* arpg_player_target()
+{
+    return player_target != NULL && arpg_alive(player_target) ? player_target : NULL;
+}
+
 void arpg_player_clear_target()
 {
     player_target = NULL;

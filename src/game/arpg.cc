@@ -239,6 +239,7 @@ static int autotest_wasd = -1;
 static bool dump_items = false;
 static bool autotest_iframes = false;
 static bool autotest_god = false;
+static int autotest_saveload = 0;
 
 static unsigned int next_hold_action = 0;
 static int hold_last_tile = -1;
@@ -527,6 +528,7 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "dump_items", &dump_items);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_iframes", &autotest_iframes);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_god", &autotest_god);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_saveload", &autotest_saveload);
     // Autotest: hold a WASD direction (0=W 1=D 2=S 3=A) through the real
     // movement path.
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_wasd", &autotest_wasd);
@@ -544,7 +546,7 @@ void arpg_init()
 
     // Command-line test switches are merged into game_config, which CE saves
     // back to fallout.cfg on exit. Neutralize them so they don't stick.
-    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_iframes", "autotest_god" };
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_iframes", "autotest_god", "autotest_saveload" };
     for (const char* key : testKeys) {
         char* value;
         if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
@@ -1133,6 +1135,13 @@ static void arpg_populate_level()
     if (spawned > 0) {
         arpg_refresh_list();
     }
+}
+
+void arpg_on_game_load()
+{
+    // A loaded game is another timeline: whatever was spawned before is gone
+    // from it, so every level gets fresh packs.
+    populated_hour.clear();
 }
 
 // D2 pack behaviour: when one member of a pack joins a fight, the rest of
@@ -2591,6 +2600,36 @@ void arpg_tick()
         if (autoshot_ms > 0 && now >= next_autoshot) {
             next_autoshot = now + autoshot_ms;
             dump_screen();
+        }
+
+        // Save mid-fight with packs alive, one clone knocked out so a queue
+        // event is owned by an unsaved object, then load the save back.
+        static int saveLoadPhase = 0;
+        if (autotest_saveload > 0) {
+            unsigned int at = (unsigned int)autotest_saveload * 1000;
+            if (saveLoadPhase == 0 && now - autotest_start > at) {
+                saveLoadPhase = 1;
+                int clones = 0;
+                for (int index = 0; index < crit_count; index++) {
+                    Object* critter = crit_list[index];
+                    if (arpg_is_spawned(critter) && arpg_alive(critter)) {
+                        if (clones == 0) {
+                            critter->data.critter.combat.results |= DAM_KNOCKED_OUT;
+                            queue_add(600, critter, NULL, EVENT_TYPE_KNOCKOUT);
+                            arpg_log("ARPG autotest: knocked out clone %s\n", arpg_label(critter));
+                        }
+                        clones++;
+                    }
+                }
+                int rc = arpg_ls_save_slot(9, "ARPG autotest");
+                arpg_log("ARPG autotest: saved slot 10 rc=%d with %d live clones\n", rc, clones);
+            } else if (saveLoadPhase == 1 && now - autotest_start > at + 3000) {
+                saveLoadPhase = 2;
+                arpg_log("ARPG autotest: loading slot 10\n");
+                int rc = arpg_ls_load_slot(9);
+                arpg_log("ARPG autotest: loaded rc=%d, map %d, dude hp=%d\n", rc, map_get_index_number(), critter_get_hits(obj_dude));
+                return;
+            }
         }
 
         // Watchdog: an attack animation that has been playing for seconds

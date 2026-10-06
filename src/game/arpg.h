@@ -77,6 +77,13 @@ bool arpg_is_spawned(Object* obj);
 // "Extra Fast, Fire Enchanted"). Returns false for ordinary critters.
 bool arpg_monster_info(Object* critter, int* rank, char* name, int nameSize, char* mods, int modsSize);
 
+// A saved game is being loaded (packs aren't saved, so they respawn).
+void arpg_on_game_load();
+
+// Autotest save/load without the UI (loadsave.cc).
+int arpg_ls_save_slot(int slot, const char* description);
+int arpg_ls_load_slot(int slot);
+
 // Hotkeys.
 void arpg_quick_heal();
 void arpg_quick_reload();

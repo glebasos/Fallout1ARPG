@@ -7,6 +7,7 @@
 
 #include <algorithm>
 
+#include "game/arpg.h"
 #include "game/automap.h"
 #include "game/bmpdlog.h"
 #include "game/combat.h"
@@ -1594,6 +1595,9 @@ int isLoadingGame()
 // 0x46FCCC
 static int LoadSlot(int slot)
 {
+    // ARPG: monster packs aren't saved, so a loaded game respawns them.
+    arpg_on_game_load();
+
     gmouse_set_cursor(MOUSE_CURSOR_WAIT_PLANET);
 
     if (isInCombat()) {
@@ -2815,6 +2819,23 @@ static int EraseSave()
     compat_remove(str0);
 
     return 0;
+}
+
+// ARPG autotest: save to / load from `slot` (0-9) without the UI, through
+// the quick save/load path.
+int arpg_ls_save_slot(int slot, const char* description)
+{
+    slot_cursor = slot;
+    quick_done = true;
+    snprintf(LSData[slot].description, sizeof(LSData[slot].description), "%s", description);
+    return SaveGame(LOAD_SAVE_MODE_QUICK);
+}
+
+int arpg_ls_load_slot(int slot)
+{
+    slot_cursor = slot;
+    quick_done = true;
+    return LoadGame(LOAD_SAVE_MODE_QUICK);
 }
 
 } // namespace fallout

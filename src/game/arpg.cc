@@ -372,6 +372,8 @@ static bool autotest_gallery = false;
 static bool autotest_loot = false;
 static bool autotest_rmb = false;
 static int autotest_swap = 0;
+// Steps the map zoom every 3.5 s and checks the mouse mapping.
+static int autotest_zoom = 0;
 static bool autotest_swarm = false;
 static int autotest_magic = 0;
 static bool autotest_encounter = false;
@@ -718,6 +720,7 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_rmb", &autotest_rmb);
     // Autotest: swap weapons (B) every N ms (pair with autotest_wasd).
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_swap", &autotest_swap);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_zoom", &autotest_zoom);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_swarm", &autotest_swarm);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_magic", &autotest_magic);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_encounter", &autotest_encounter);
@@ -740,7 +743,7 @@ void arpg_init()
 
     // Command-line test switches are merged into game_config, which CE saves
     // back to fallout.cfg on exit. Neutralize them so they don't stick.
-    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_swap", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_loot", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile", "autotest_sweep_encounters", "autotest_rmb", "autotest_hover" };
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_swap", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_loot", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile", "autotest_sweep_encounters", "autotest_rmb", "autotest_hover", "autotest_zoom" };
     for (const char* key : testKeys) {
         char* value;
         if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
@@ -4040,6 +4043,7 @@ static void arpg_hold_tick(unsigned int now)
         return;
     }
 
+    arpg_zoom_screen_to_world(&mouseX, &mouseY);
     int tile = tile_num(mouseX, mouseY, map_elevation);
     if (tile == -1 || tile == hold_last_tile || tile == obj_dude->tile) {
         return;
@@ -4682,6 +4686,36 @@ void arpg_tick()
             nextSwap = now + autotest_swap;
         }
 
+        // Zoom test: wheel steps through the levels; each time the mouse is put
+        // on the player's screen position and must map back to its tile.
+        static int zoomStep = 0;
+        static unsigned int nextZoom = 0;
+        if (autotest_zoom && now - autotest_start > 3000 && now >= nextZoom) {
+            static const int deltas[] = { 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 1, 1, 1, 1, 1 };
+            if (zoomStep < (int)(sizeof(deltas) / sizeof(deltas[0]))) {
+                arpg_zoom_step(deltas[zoomStep]);
+                zoomStep++;
+            }
+            int x;
+            int y;
+            if (tile_coord(obj_dude->tile, &x, &y, obj_dude->elevation) == 0) {
+                int sx = x + 16;
+                int sy = y + 8;
+                arpg_zoom_world_to_screen(&sx, &sy);
+                mouse_set_position(sx, sy);
+                int wx;
+                int wy;
+                arpg_mouse_world_position(&wx, &wy);
+                int viewW;
+                int viewH;
+                arpg_zoom_view_size(&viewW, &viewH);
+                int tile = tile_num(wx, wy, obj_dude->elevation);
+                arpg_log("ARPG autotest: zoom %d%% render %dx%d dude screen %d,%d mouse tile %d dude tile %d %s\n",
+                    arpg_zoom_pct(), viewW, viewH, sx, sy, tile, obj_dude->tile, tile == obj_dude->tile ? "OK" : "MISMATCH");
+            }
+            nextZoom = now + 3500;
+        }
+
         // Right-button test: F twice (cursor mode round trip), then near-miss
         // right clicks with the cursor ~1 hex off an enemy, every 3 s.
         static int rmbStep = 0;
@@ -4705,7 +4739,10 @@ void arpg_tick()
                 int y;
                 if (enemy != NULL && tile_coord(enemy->tile, &x, &y, map_elevation) == 0) {
                     // Tile origin + one hex sideways: off the sprite, inside the 2-hex snap.
-                    mouse_set_position(x + 16 + 32, y + 8);
+                    int sx = x + 16 + 32;
+                    int sy = y + 8;
+                    arpg_zoom_world_to_screen(&sx, &sy);
+                    mouse_set_position(sx, sy);
                     int mode = gmouse_3d_get_mode();
                     Object* snapped = arpg_target_near_cursor();
                     arpg_rmb_special(arpg_attack_in_place());
@@ -5206,7 +5243,7 @@ Object* arpg_target_near_cursor()
 
     int mouseX;
     int mouseY;
-    mouse_get_position(&mouseX, &mouseY);
+    arpg_mouse_world_position(&mouseX, &mouseY);
     int tile = tile_num(mouseX, mouseY, map_elevation);
     if (tile == -1) {
         return NULL;
@@ -5492,8 +5529,10 @@ static void arpg_camera_follow()
         return;
     }
 
-    int width = scr_size.lrx - scr_size.ulx + 1;
-    int height = scr_size.lry - scr_size.uly + 1 - 100;
+    // Render buffer size (tile_coord space), the view size when not zoomed.
+    int width;
+    int height;
+    arpg_zoom_view_size(&width, &height);
     int offX = x + 16 - width / 2;
     int offY = y + 8 - height / 2;
 
@@ -5996,7 +6035,7 @@ static void arpg_dodge()
         int y;
         int mouseX;
         int mouseY;
-        mouse_get_position(&mouseX, &mouseY);
+        arpg_mouse_world_position(&mouseX, &mouseY);
         if (tile_coord(obj_dude->tile, &x, &y, obj_dude->elevation) == -1) {
             return;
         }

@@ -26,6 +26,8 @@ extern Object* obj_egg;
 extern Object* obj_dude;
 
 int obj_init(unsigned char* buf, int width, int height, int pitch);
+// ARPG zoom: points the object renderer at another buffer.
+void obj_set_buffer(unsigned char* buf, int width, int height, int pitch);
 void obj_reset();
 void obj_exit();
 int obj_load(DB_FILE* stream);

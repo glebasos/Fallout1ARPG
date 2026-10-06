@@ -569,6 +569,25 @@ int tile_set_center(int tile, int flags)
     return 0;
 }
 
+// ARPG zoom: the map is rendered into a buffer of another size and scaled
+// into the display window. Keeps the center tile; offsets follow the size.
+void tile_set_buffer(unsigned char* buffer, int width, int height, int pitch)
+{
+    buf = buffer;
+    buf_width = width;
+    buf_length = height;
+    buf_full = pitch;
+    buf_rect.ulx = 0;
+    buf_rect.uly = 0;
+    buf_rect.lrx = width - 1;
+    buf_rect.lry = height - 1;
+
+    bool wasBorder = borderInitialized;
+    borderInitialized = false;
+    tile_set_center(tile_center_tile, TILE_SET_CENTER_FLAG_IGNORE_SCROLL_RESTRICTIONS);
+    borderInitialized = wasBorder;
+}
+
 // 0x49E138
 static void refresh_mapper(Rect* rect, int elevation)
 {

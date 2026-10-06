@@ -623,6 +623,9 @@ void gmouse_bk_process()
         return;
     }
 
+    // ARPG zoom: from here on the mouse is a map position (render pixels).
+    arpg_zoom_screen_to_world(&mouseX, &mouseY);
+
     // NOTE: Strange set of conditions and jumps. Not sure about this one.
     switch (gmouse_current_cursor) {
     case MOUSE_CURSOR_NONE:
@@ -703,7 +706,10 @@ void gmouse_bk_process()
                     }
 
                     if (primaryAction != -1) {
-                        if (gmouse_3d_build_pick_frame(mouseX, mouseY, primaryAction, scr_size.lrx - scr_size.ulx + 1, scr_size.lry - scr_size.uly - 99) == 0) {
+                        int viewWidth;
+                        int viewHeight;
+                        arpg_zoom_view_size(&viewWidth, &viewHeight);
+                        if (gmouse_3d_build_pick_frame(mouseX, mouseY, primaryAction, viewWidth, viewHeight) == 0) {
                             Rect tmp;
                             int fid = art_id(OBJ_TYPE_INTERFACE, 282, 0, 0, 0);
                             // NOTE: Uninline.
@@ -860,8 +866,13 @@ void gmouse_handle_event(int mouseX, int mouseY, int mouseState)
         return;
     }
 
+    // ARPG zoom: the map position under the mouse (render pixels).
+    int worldX = mouseX;
+    int worldY = mouseY;
+    arpg_zoom_screen_to_world(&worldX, &worldY);
+
     // CE: Make sure we cannot go outside of the map.
-    if (!tile_point_inside_bound(mouseX, mouseY)) {
+    if (!tile_point_inside_bound(worldX, worldY)) {
         return;
     }
 
@@ -999,8 +1010,8 @@ void gmouse_handle_event(int mouseX, int mouseY, int mouseState)
             if (target != NULL) {
                 combat_attack_this(target);
                 gmouse_3d_hover_test = true;
-                gmouse_3d_last_mouse_y = mouseY;
-                gmouse_3d_last_mouse_x = mouseX;
+                gmouse_3d_last_mouse_y = worldY;
+                gmouse_3d_last_mouse_x = worldX;
                 gmouse_3d_last_move_time = get_time() - 250;
             }
             return;
@@ -1106,11 +1117,14 @@ void gmouse_handle_event(int mouseX, int mouseY, int mouseState)
                 break;
             }
 
-            if (gmouse_3d_build_menu_frame(mouseX, mouseY, actionMenuItems, actionMenuItemsCount, scr_size.lrx - scr_size.ulx + 1, scr_size.lry - scr_size.uly - 99) == 0) {
+            int viewWidth;
+            int viewHeight;
+            arpg_zoom_view_size(&viewWidth, &viewHeight);
+            if (gmouse_3d_build_menu_frame(worldX, worldY, actionMenuItems, actionMenuItemsCount, viewWidth, viewHeight) == 0) {
                 Rect v43;
                 int fid = art_id(OBJ_TYPE_INTERFACE, 283, 0, 0, 0);
                 // NOTE: Uninline.
-                if (gmouse_3d_set_flat_fid(fid, &v43) == 0 && gmouse_3d_move_to(mouseX, mouseY, map_elevation, &v43) == 0) {
+                if (gmouse_3d_set_flat_fid(fid, &v43) == 0 && gmouse_3d_move_to(worldX, worldY, map_elevation, &v43) == 0) {
                     tile_refresh_rect(&v43, map_elevation);
                     map_disable_bk_processes();
 
@@ -1149,8 +1163,8 @@ void gmouse_handle_event(int mouseX, int mouseY, int mouseState)
                     map_enable_bk_processes();
 
                     gmouse_3d_hover_test = false;
-                    gmouse_3d_last_mouse_x = mouseX;
-                    gmouse_3d_last_mouse_y = mouseY;
+                    gmouse_3d_last_mouse_x = worldX;
+                    gmouse_3d_last_mouse_y = worldY;
                     gmouse_3d_last_move_time = get_time();
 
                     mouse_set_position(mouseX, v33);
@@ -1361,7 +1375,7 @@ void gmouse_3d_set_mode(int mode)
 
     int mouseX;
     int mouseY;
-    mouse_get_position(&mouseX, &mouseY);
+    arpg_mouse_world_position(&mouseX, &mouseY);
 
     Rect r2;
     if (gmouse_3d_move_to(mouseX, mouseY, map_elevation, &r2) == 0) {
@@ -1612,7 +1626,7 @@ Object* object_under_mouse(int objectType, bool a2, int elevation)
 {
     int mouseX;
     int mouseY;
-    mouse_get_position(&mouseX, &mouseY);
+    arpg_mouse_world_position(&mouseX, &mouseY);
 
     bool v13 = false;
     if (objectType == -1) {
@@ -2008,7 +2022,7 @@ static int gmouse_3d_init()
 
     int x;
     int y;
-    mouse_get_position(&x, &y);
+    arpg_mouse_world_position(&x, &y);
 
     Rect v9;
     gmouse_3d_move_to(x, y, map_elevation, &v9);

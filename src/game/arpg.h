@@ -3,6 +3,7 @@
 
 #include "game/combat_defs.h"
 #include "game/object_types.h"
+#include "plib/gnw/rect.h"
 
 namespace fallout {
 
@@ -140,6 +141,30 @@ void arpg_quick_reload();
 // hand without the put-away/take-out sequence, keeping the current walk/run.
 // Deferred to arpg_tick while another animation (an attack) is playing.
 void arpg_sync_dude_weapon_fid();
+
+// Map zoom (mouse wheel). The map is rendered into a buffer of the "render"
+// size (view size / zoom) and scaled into the display window, so tile_coord /
+// tile_num / object picking work in render ("world buffer") pixels while the
+// mouse and the HUD work in screen pixels.
+// The render buffer is at most this many times the view (zoom 50%).
+constexpr int ARPG_ZOOM_MAX_RENDER_SCALE = 2;
+void arpg_zoom_init(unsigned char* displayBuffer, int width, int height);
+void arpg_zoom_exit();
+// +1 zooms in one step, -1 out. Refreshes the map.
+void arpg_zoom_step(int delta);
+void arpg_zoom_set_pct(int pct);
+int arpg_zoom_pct();
+bool arpg_zoom_active();
+// Tile renderer blit callback while zoomed: scales the render-buffer rect
+// into the display window and draws it.
+void arpg_zoom_blit(Rect* rect);
+// Screen (display window) <-> render buffer pixels. Identity at 100%.
+void arpg_zoom_screen_to_world(int* x, int* y);
+void arpg_zoom_world_to_screen(int* x, int* y);
+// mouse_get_position converted to render buffer pixels.
+void arpg_mouse_world_position(int* x, int* y);
+// Size of the render buffer (what tile_coord coordinates span).
+void arpg_zoom_view_size(int* width, int* height);
 
 // Test harness: `[arpg]autotest=1` skips menus and starts a new game with the
 // combat premade character.

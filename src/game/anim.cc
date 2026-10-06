@@ -3050,7 +3050,8 @@ int check_move(int* a1)
 {
     int x;
     int y;
-    mouse_get_position(&x, &y);
+    // ARPG zoom: map position under the mouse.
+    arpg_mouse_world_position(&x, &y);
 
     int tile = tile_num(x, y, map_elevation);
     if (tile == -1) {

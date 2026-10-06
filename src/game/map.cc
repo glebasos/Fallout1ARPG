@@ -322,6 +322,9 @@ int iso_init()
 
     debug_printf(">obj_init\t\t");
 
+    // ARPG: mouse-wheel zoom renders into its own buffer when zoomed.
+    arpg_zoom_init(display_buf, scr_size.lrx - scr_size.ulx + 1, scr_size.lry - scr_size.uly - 99);
+
     cycle_init();
     debug_printf(">cycle_init\t\t");
 
@@ -364,6 +367,7 @@ void iso_exit()
     obj_exit();
     tile_exit();
     art_exit();
+    arpg_zoom_exit();
 
     win_delete(display_win);
 
@@ -745,6 +749,13 @@ int map_scroll(int dx, int dy)
 
     if (tile_set_center(newCenterTile, 0) == -1) {
         return -1;
+    }
+
+    // ARPG zoom: the shift-the-buffer path below assumes the display buffer;
+    // redraw the render buffer instead.
+    if (arpg_zoom_active()) {
+        tile_refresh_display();
+        return 0;
     }
 
     Rect r1;
@@ -1596,6 +1607,11 @@ static void map_match_map_number()
 // 0x475C3C
 static void map_display_draw(Rect* rect)
 {
+    if (arpg_zoom_active()) {
+        arpg_zoom_blit(rect);
+        return;
+    }
+
     win_draw_rect(display_win, rect);
 }
 

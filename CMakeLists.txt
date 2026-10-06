@@ -50,6 +50,7 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/game/arpg.h"
     "src/game/arpg_crash.cc"
     "src/game/arpg_hud.cc"
+    "src/game/arpg_zoom.cc"
     "src/game/anim.h"
     "src/game/art.cc"
     "src/game/art.h"

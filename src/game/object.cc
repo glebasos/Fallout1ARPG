@@ -273,9 +273,11 @@ int obj_init(unsigned char* buf, int width, int height, int pitch)
     int eggFid;
 
     memset(obj_seen, 0, 5001);
-    updateAreaPixelBounds.lrx = width + 320;
+    // ARPG zoom: the hex tables are sized for the widest zoom-out render
+    // buffer (they only hold relative hex offsets, so bigger is still right).
+    updateAreaPixelBounds.lrx = width * ARPG_ZOOM_MAX_RENDER_SCALE + 320;
     updateAreaPixelBounds.ulx = -320;
-    updateAreaPixelBounds.lry = height + 240;
+    updateAreaPixelBounds.lry = height * ARPG_ZOOM_MAX_RENDER_SCALE + 240;
     updateAreaPixelBounds.uly = -240;
 
     updateHexWidth = (updateAreaPixelBounds.lrx + 320 + 1) / 32 + 1;
@@ -2739,6 +2741,21 @@ int obj_intersects_with(Object* object, int x, int y)
     return flags;
 }
 
+void obj_set_buffer(unsigned char* buf, int width, int height, int pitch)
+{
+    buf_width = width;
+    buf_length = height;
+    back_buf = buf;
+
+    buf_rect.ulx = 0;
+    buf_rect.uly = 0;
+    buf_rect.lrx = width - 1;
+    buf_rect.lry = height - 1;
+
+    buf_size = height * width;
+    buf_full = pitch;
+}
+
 // 0x47DCC0
 int obj_create_intersect_list(int x, int y, int elevation, int objectType, ObjectWithFlags** entriesPtr)
 {
@@ -3008,7 +3025,10 @@ static int obj_offset_table_init()
     }
 
     for (int parity = 0; parity < 2; parity++) {
-        int originTile = tile_num(updateAreaPixelBounds.ulx, updateAreaPixelBounds.uly, 0);
+        // ARPG zoom: the table spans more rows than the map has when sized
+        // for the widest zoom-out; the offsets are linear, so compute them
+        // past the edges.
+        int originTile = tile_num(updateAreaPixelBounds.ulx, updateAreaPixelBounds.uly, 0, true);
         if (originTile != -1) {
             int* offsets = offsetTable[tile_center_tile & 1];
             int originTileX;
@@ -3025,7 +3045,7 @@ static int obj_offset_table_init()
             int tileX = originTileX;
             for (int y = 0; y < updateHexHeight; y++) {
                 for (int x = 0; x < updateHexWidth; x++) {
-                    int tile = tile_num(tileX, originTileY, 0);
+                    int tile = tile_num(tileX, originTileY, 0, true);
                     if (tile == -1) {
                         goto err;
                     }

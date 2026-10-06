@@ -441,6 +441,12 @@ int game_handle_input(int eventCode, bool isInCombatMode)
             int wheelY;
             mouseGetWheel(&wheelX, &wheelY);
 
+            // ARPG: the wheel zooms the map instead of scrolling it.
+            if (arpg_enabled() && wheelY != 0) {
+                arpg_zoom_step(wheelY > 0 ? 1 : -1);
+                return 0;
+            }
+
             int dx = 0;
             if (wheelX > 0) {
                 dx = 1;

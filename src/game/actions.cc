@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "game/anim.h"
+#include "game/arpg.h"
 #include "game/combat.h"
 #include "game/combatai.h"
 #include "game/config.h"
@@ -1477,7 +1478,8 @@ int pick_hex()
         return -1;
     }
 
-    mouse_get_position(&(rect.ulx), &(rect.uly));
+    // ARPG zoom: map position under the mouse.
+    arpg_mouse_world_position(&(rect.ulx), &(rect.uly));
 
     tile = tile_num(rect.ulx, rect.uly, elevation);
     if (tile == -1) {

@@ -7,6 +7,8 @@
 namespace fallout {
 
 int text_object_init(unsigned char* windowBuffer, int width, int height);
+// ARPG zoom: points floating text at another buffer.
+void text_object_set_buffer(unsigned char* windowBuffer, int width, int height);
 int text_object_reset();
 void text_object_exit();
 void text_object_disable();

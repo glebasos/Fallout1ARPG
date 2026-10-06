@@ -67,6 +67,13 @@ static bool text_object_enabled;
 // 0x665270
 static bool text_object_initialized;
 
+void text_object_set_buffer(unsigned char* windowBuffer, int width, int height)
+{
+    display_buffer = windowBuffer;
+    display_width = width;
+    display_height = height;
+}
+
 // 0x49CD80
 int text_object_init(unsigned char* windowBuffer, int width, int height)
 {

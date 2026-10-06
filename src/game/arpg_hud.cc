@@ -1437,8 +1437,10 @@ static void labels_refresh()
     }
 
     std::vector<Object*> candidates;
-    int screenWidth = screenGetWidth();
-    int screenHeight = screenGetHeight() - HUD_HEIGHT;
+    // tile_coord space: the zoom render buffer.
+    int screenWidth;
+    int screenHeight;
+    arpg_zoom_view_size(&screenWidth, &screenHeight);
     for (int index = 0; index < count; index++) {
         Object* item = items[index];
         if (item->owner != NULL || (item->flags & OBJECT_HIDDEN) != 0 || item->tile == -1) {

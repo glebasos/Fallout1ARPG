@@ -665,6 +665,37 @@ int anim_busy(Object* a1)
     return 0;
 }
 
+// ARPG: true when a pending animation sequence names [obj] as owner, move
+// target or callback argument (e.g. the item of a queued manual pickup).
+// Auto-pickup must not take such an object: the queued is_next_to/pickup
+// callbacks would then run on an item that left the map (tile -1 makes
+// tile_dist loop forever) or was freed by a stack merge.
+bool anim_refers_to(Object* obj)
+{
+    if (obj == NULL) {
+        return false;
+    }
+
+    for (int animationSequenceIndex = 0; animationSequenceIndex < ANIMATION_SEQUENCE_LIST_CAPACITY; animationSequenceIndex++) {
+        AnimationSequence* animationSequence = &(anim_set[animationSequenceIndex]);
+        if (animationSequence->field_0 == -1000) {
+            continue;
+        }
+
+        for (int animationDescriptionIndex = 0; animationDescriptionIndex < animationSequence->length; animationDescriptionIndex++) {
+            AnimationDescription* animationDescription = &(animationSequence->animations[animationDescriptionIndex]);
+            if (animationDescription->owner == obj || animationDescription->destination == obj) {
+                return true;
+            }
+            if (animationDescription->kind == ANIM_KIND_CALLBACK3 && animationDescription->param3 == obj) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 // 0x413A3C
 int register_object_move_to_object(Object* owner, Object* destination, int actionPoints, int delay)
 {

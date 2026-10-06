@@ -119,6 +119,7 @@ void anim_debug_dump(Object* obj, void (*log)(const char* line));
 int register_end();
 int check_registry(Object* obj);
 int anim_busy(Object* a1);
+bool anim_refers_to(Object* obj);
 int register_object_move_to_object(Object* owner, Object* destination, int actionPoints, int delay);
 int register_object_run_to_object(Object* owner, Object* destination, int actionPoints, int delay);
 int register_object_move_to_tile(Object* owner, int tile, int elevation, int actionPoints, int delay);

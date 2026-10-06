@@ -775,6 +775,12 @@ int tile_dist(int tile1, int tile2)
     int parity;
     int dir;
 
+    // ARPG: an off-map tile (-1 for an item already in an inventory) never
+    // meets the other one and the walk below would spin forever.
+    if (!TILE_IS_VALID(tile1) || !TILE_IS_VALID(tile2)) {
+        return 9999;
+    }
+
     while (tile != tile2) {
         parity = (tile % grid_width) & 1;
         dir = tile_dir(tile, tile2);

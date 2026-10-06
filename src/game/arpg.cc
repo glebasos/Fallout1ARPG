@@ -376,6 +376,7 @@ static int autotest_die = 0;
 static bool autotest_shrines = false;
 static bool autotest_gallery = false;
 static bool autotest_loot = false;
+static bool autotest_manual_caps = false;
 static bool autotest_rmb = false;
 static int autotest_swap = 0;
 // Steps the map zoom every 3.5 s and checks the mouse mapping.
@@ -785,6 +786,7 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_shrines", &autotest_shrines);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_gallery", &autotest_gallery);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_loot", &autotest_loot);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_manual_caps", &autotest_manual_caps);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_rmb", &autotest_rmb);
     // Autotest: swap weapons (B) every N ms (pair with autotest_wasd).
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_swap", &autotest_swap);
@@ -813,7 +815,7 @@ void arpg_init()
 
     // Command-line test switches are merged into game_config, which CE saves
     // back to fallout.cfg on exit. Neutralize them so they don't stick.
-    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_swap", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_loot", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile", "autotest_sweep_encounters", "autotest_rmb", "autotest_hover", "autotest_zoom", "autotest_hang", "autotest_options" };
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_swap", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_loot", "autotest_manual_caps", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile", "autotest_sweep_encounters", "autotest_rmb", "autotest_hover", "autotest_zoom", "autotest_hang", "autotest_options" };
     for (const char* key : testKeys) {
         char* value;
         if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
@@ -4072,7 +4074,8 @@ static void arpg_caps_tick(unsigned int now)
             || (auto_consumables && arpg_is_auto_consumable(obj->pid))
             || (auto_ammo && item_get_type(obj) == ITEM_TYPE_AMMO);
         if (wanted && obj->owner == NULL && (obj->flags & OBJECT_HIDDEN) == 0
-            && obj->tile != -1 && tile_dist(obj->tile, obj_dude->tile) <= 2) {
+            && obj->tile != -1 && tile_dist(obj->tile, obj_dude->tile) <= 2
+            && !anim_refers_to(obj)) {
             found.push_back(obj);
         }
     }
@@ -4771,6 +4774,27 @@ void arpg_tick()
                     arpg_log("LOOT test: %s at %d quality %d fid 0x%x inv 0x%x flags 0x%x\n", item_name(item), item->tile,
                         arpg_item_quality(item), item->fid, item_inv_fid(item), item->flags);
                 }
+            }
+        }
+
+        // Manual caps pickup test: caps 4 hexes away, clicked like the player
+        // would (walk + is_next_to + pickup), while the auto-pickup tick runs
+        // as the dude walks into its 2-hex radius. Repeats every 3 s.
+        static unsigned int nextManualCaps = 0;
+        static int manualCapsRound = 0;
+        if (autotest_manual_caps && now - autotest_start > 1500 && now >= nextManualCaps && manualCapsRound < 8) {
+            nextManualCaps = now + 3000;
+            int rotation = manualCapsRound % ROTATION_COUNT;
+            manualCapsRound++;
+            int tile = tile_num_in_direction(obj_dude->tile, rotation, 4);
+            Object* caps = arpg_drop_item(obj_dude, PROTO_ID_MONEY, 10 + manualCapsRound);
+            if (caps != NULL && tile != -1) {
+                Rect rect;
+                obj_move_to_tile(caps, tile, obj_dude->elevation, &rect);
+                tile_refresh_rect(&rect, obj_dude->elevation);
+                int rc = action_get_an_object(obj_dude, caps);
+                arpg_log("MANUAL CAPS %d: %d caps at %d (dist %d), caps now %d, rc %d\n", manualCapsRound,
+                    10 + manualCapsRound, tile, tile_dist(tile, obj_dude->tile), item_caps_total(obj_dude), rc);
             }
         }
 

@@ -13,6 +13,9 @@ no game files are included.
 Three control schemes. Set `[arpg] controls=poe|wasd|classic` (default `poe`), or press **Ctrl+W** in
 game to cycle them.
 
+**Mouse wheel zooms the map** in every scheme: 50% (see more) to 200% (closer), in steps. Only the map is
+scaled; the HUD, labels bar and cursor stay at screen resolution.
+
 ### `poe`: Path of Exile click-to-move (default)
 | Input | Action |
 |---|---|
@@ -141,6 +144,7 @@ Packs: `packs` (1), `pack_min` (2), `pack_max` (4), `pack_density_pct` (100), `c
 `unique_pct` (7), `pack_respawn_hours` (12), `max_spawns` per level (60), `aggro_radius` (9).
 HUD and extras: `minimap` (1), `hotkey_bar` (1), `shrines` (1), `shrine_scenery` (scenery proto number, 1 = Burning Metal Barrel),
 `raider_packs` (1), `party_damage_taken_pct` (70: followers take 30% less damage, like D2 mercenaries).
+Zoom: `zoom` (100, start zoom in percent, 50-200), `zoom_smooth` (1; 0 = nearest-neighbour pixels).
 
 ## Test harness (developers)
 ```
@@ -154,6 +158,8 @@ elevation), logging `SWEEP` lines with monster/pack/engagement counts; combine w
 seconds (with a knocked-out pack monster) and loads it back 3 s later.
 `[arpg]autotest_iframes=1` keeps dodge i-frames on. `[arpg]autotest_wasd=0..3` holds W/D/S/A (3 s on, 1 s off) through the real WASD movement path;
 `[arpg]autotest_rmb=1` presses F twice, then right-clicks ~1 hex off the nearest enemy every 3 s (logs the snap and mode).
+`[arpg]autotest_zoom=1` steps the zoom up to 200%, down to 50% and back (3.5 s each), puts the mouse on the
+player each time and logs whether it maps back to the player's tile (`OK`/`MISMATCH`).
 `[arpg]autotest_hover=1` walks the hotkey-bar tooltip across the slots (1.5 s each) for screenshots.
 `[arpg]dump_items=1` logs every item PID. Test keys are reset in fallout.cfg on exit, but other
 overrides like `controls` or `dodge_cost` are saved.
@@ -178,6 +184,8 @@ homage uniques). The optional D2 item art is generated on the player's machine f
 ## Code map
 - `src/game/arpg.cc` – real-time combat, AI tick, energy/specials, loot, hold-to-move, control schemes
   (`arpg_handle_key`, WASD tick, dodge, flasks), autotest.
+- `src/game/arpg_zoom.cc` – map zoom: render buffer of view size / zoom, scaled into the display window
+  (`map_display_draw`); `tile_set_buffer` / `obj_set_buffer` / `text_object_set_buffer` retarget the renderer.
 - `src/game/arpg_hud.cc` – globes, hotkey bar, target bar, XP bar, minimap and Alt labels. `src/game/arpg_crash.cc` – autotest crash reporter.
 - Hooks: `game_handle_input` → `arpg_handle_key` before Fallout's key switch, `combat()` / `combat_attack_this()` redirect, `main_game_loop` tick, `gmouse` click handling,
   `script_chk_critters` skips critter_p_proc for fighting critters, `obj_remove_all` resets state,

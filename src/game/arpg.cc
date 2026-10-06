@@ -197,6 +197,7 @@ static bool always_run = true;
 static bool labels_always = false;
 static bool hold_to_move = true;
 static bool loot_drops = true;
+static bool auto_caps = true;
 static int loot_pct = 100;
 static int energy_regen_pct = 100;
 
@@ -506,6 +507,7 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "hold_to_move", &hold_to_move);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "labels_always", &labels_always);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "loot_drops", &loot_drops);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "auto_caps", &auto_caps);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "loot_pct", &loot_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "energy_regen_pct", &energy_regen_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "dodge_cost", &dodge_cost);
@@ -2292,6 +2294,40 @@ static void arpg_drop_loot(Object* victim, int rolls, bool guaranteedGear)
     }
 }
 
+// D2 gold: caps lying next to the player are picked up just by walking past.
+static void arpg_caps_tick(unsigned int now)
+{
+    static unsigned int next = 0;
+    if (!auto_caps || now < next) {
+        return;
+    }
+    next = now + 200;
+
+    if (obj_dude->tile == -1 || (obj_dude->data.critter.combat.results & (DAM_DEAD | DAM_KNOCKED_OUT)) != 0) {
+        return;
+    }
+
+    std::vector<Object*> found;
+    for (Object* obj = obj_find_first_at(obj_dude->elevation); obj != NULL; obj = obj_find_next_at()) {
+        if (obj->pid == PROTO_ID_MONEY && obj->owner == NULL && (obj->flags & OBJECT_HIDDEN) == 0
+            && obj->tile != -1 && tile_dist(obj->tile, obj_dude->tile) <= 2) {
+            found.push_back(obj);
+        }
+    }
+
+    for (Object* caps : found) {
+        int amount = item_caps_get_amount(caps);
+        if (obj_pickup(obj_dude, caps) == 0 && caps->owner == obj_dude) {
+            char text[32];
+            snprintf(text, sizeof(text), "+%d caps", amount);
+            arpg_float_text(obj_dude, text, colorTable[32256]);
+            gsound_play_sfx_file("ib1p1xx1");
+            intface_update_items(false);
+            arpg_log("ARPG: picked up %d caps\n", amount);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Hold-to-move (hold the left button to keep running toward the cursor)
 // ---------------------------------------------------------------------------
@@ -2780,6 +2816,11 @@ void arpg_tick()
             intface_update_ac(false);
             intface_update_hit_points(false);
             arpg_log("ARPG autotest: armed with %s\n", item_name(weapon));
+
+            // Caps on the floor nearby, for the walk-over pickup.
+            for (int pile = 0; pile < 3; pile++) {
+                arpg_drop_item(obj_dude, PROTO_ID_MONEY, 10 + pile);
+            }
         }
     }
 
@@ -2910,6 +2951,7 @@ void arpg_tick()
     }
 
     arpg_energy_tick(now);
+    arpg_caps_tick(now);
     arpg_wasd_tick(now);
     arpg_hold_tick(now);
     arpg_player_tick(now);

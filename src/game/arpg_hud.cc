@@ -13,6 +13,7 @@
 #include "game/gconfig.h"
 #include "game/gmouse.h"
 #include "game/intface.h"
+#include "game/inventry.h"
 #include "game/item.h"
 #include "game/map.h"
 #include "game/object.h"
@@ -172,6 +173,69 @@ static void hud_draw_globe(int win, int value, int maxValue, bool blue, const ch
     win_draw(win);
 }
 
+// D2 belt: how many of each flask (1-5 keys) are carried, in the free
+// column between the life globe and the interface bar.
+static const int belt_pids[5][2] = {
+    { PROTO_ID_SUPER_STIMPACK, PROTO_ID_STIMPACK },
+    { PROTO_ID_RADAWAY, 109 /* Rad-X */ },
+    { PROTO_ID_BUFF_OUT, -1 },
+    { PROTO_ID_MENTATS, -1 },
+    { PROTO_ID_PSYCHO, PROTO_ID_NUKA_COLA },
+};
+static int last_belt[5] = { -1, -1, -1, -1, -1 };
+
+static void hud_draw_belt(int win)
+{
+    unsigned char* buf = win_get_buf(win);
+    if (buf == NULL) {
+        return;
+    }
+
+    // Keys 1-5 top to bottom.
+    static const char* names[] = { "Heal", "Rad", "Buff", "Ment", "Rage" };
+    int width = globe_width;
+    int columnX = width / 2 + GLOBE_RADIUS + 4;
+    if (columnX + 36 > width) {
+        return;
+    }
+
+    int oldFont = text_curr();
+    text_font(101);
+    int lineHeight = text_height() + 3;
+    int top = (HUD_HEIGHT - lineHeight * 5) / 2;
+    for (int slot = 0; slot < 5; slot++) {
+        char text[24];
+        snprintf(text, sizeof(text), "%s %d", names[slot], last_belt[slot]);
+        int color = last_belt[slot] > 0 ? rgb5(10, 28, 10) : rgb5(10, 10, 10);
+        int y = top + slot * lineHeight;
+        unsigned char* row = buf + y * width + columnX;
+        // Clear the row first; the globe redraw doesn't touch this column.
+        for (int line = 0; line < lineHeight && y + line < HUD_HEIGHT; line++) {
+            memset(buf + (y + line) * width + columnX, colorTable[0], width - columnX);
+        }
+        text_to_buf(row, text, width - columnX, width, color);
+    }
+    text_font(oldFont);
+}
+
+static bool hud_belt_changed()
+{
+    bool changed = false;
+    for (int slot = 0; slot < 5; slot++) {
+        int count = 0;
+        for (int pid : belt_pids[slot]) {
+            if (pid != -1) {
+                count += inven_pid_quantity_carried(obj_dude, pid);
+            }
+        }
+        if (count != last_belt[slot]) {
+            last_belt[slot] = count;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 static void hud_update_globes()
 {
     if (obj_dude == NULL) {
@@ -212,10 +276,13 @@ static void hud_update_globes()
     int en = arpg_energy();
     int maxEn = arpg_energy_max();
 
-    if (hp != last_values[0] || maxHp != last_values[1]) {
+    bool beltChanged = hud_belt_changed();
+    if (hp != last_values[0] || maxHp != last_values[1] || beltChanged) {
         last_values[0] = hp;
         last_values[1] = maxHp;
         hud_draw_globe(globe_windows[0], std::max(hp, 0), maxHp, false, "LIFE");
+        hud_draw_belt(globe_windows[0]);
+        win_draw(globe_windows[0]);
     }
 
     if (en != last_values[2] || maxEn != last_values[3]) {
@@ -223,6 +290,74 @@ static void hud_update_globes()
         last_values[3] = maxEn;
         hud_draw_globe(globe_windows[1], en, maxEn, true, "ENERGY");
     }
+}
+
+// ---------------------------------------------------------------------------
+// D2 experience bar: a thin strip along the top of the interface bar.
+// ---------------------------------------------------------------------------
+
+#define XP_BAR_HEIGHT 4
+
+static int xp_window = -1;
+static int last_xp = -1;
+
+static void hud_destroy_xp()
+{
+    if (xp_window != -1) {
+        win_delete(xp_window);
+        xp_window = -1;
+    }
+    last_xp = -1;
+}
+
+static void hud_update_xp()
+{
+    if (obj_dude == NULL || intface_is_hidden()) {
+        hud_destroy_xp();
+        return;
+    }
+
+    if (xp_window == -1) {
+        int x = (screenGetWidth() - 640) / 2;
+        xp_window = win_add(x, screenGetHeight() - HUD_HEIGHT - XP_BAR_HEIGHT, 640, XP_BAR_HEIGHT, colorTable[0], 0);
+        if (xp_window == -1) {
+            return;
+        }
+        last_xp = -1;
+    }
+
+    int xp = stat_pc_get(PC_STAT_EXPERIENCE);
+    if (xp == last_xp) {
+        return;
+    }
+    last_xp = xp;
+
+    // Level L starts at 1000 * L(L-1)/2 XP (stat_pc_min_exp's table).
+    int level = stat_pc_get(PC_STAT_LEVEL);
+    int start = 1000 * (level - 1) * level / 2;
+    int next = stat_pc_min_exp();
+    double frac = next > start ? (double)(xp - start) / (next - start) : 1.0;
+    frac = std::max(0.0, std::min(1.0, frac));
+
+    unsigned char* buf = win_get_buf(xp_window);
+    if (buf == NULL) {
+        return;
+    }
+    int fill = (int)(638 * frac);
+    for (int y = 0; y < XP_BAR_HEIGHT; y++) {
+        for (int x = 0; x < 640; x++) {
+            int color;
+            if (y == 0 || y == XP_BAR_HEIGHT - 1 || x == 0 || x == 639) {
+                color = rgb5(6, 5, 3);
+            } else if (x <= fill) {
+                color = y == 1 ? rgb5(31, 29, 18) : rgb5(26, 22, 8);
+            } else {
+                color = rgb5(3, 3, 2);
+            }
+            buf[y * 640 + x] = (unsigned char)color;
+        }
+    }
+    win_draw(xp_window);
 }
 
 // ---------------------------------------------------------------------------
@@ -513,12 +648,21 @@ void arpg_hud_tick(unsigned int now)
 
     hud_update_labels(now);
     hud_update_bar(now);
+    if (hud) {
+        hud_update_xp();
+    } else {
+        hud_destroy_xp();
+    }
 }
 
 void arpg_hud_reset()
 {
     hud_destroy_windows();
     bar_destroy();
+    hud_destroy_xp();
+    for (int slot = 0; slot < 5; slot++) {
+        last_belt[slot] = -1;
+    }
     hud_hidden = false;
     labels_clear();
     labels_on = false;

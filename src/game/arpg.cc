@@ -1233,6 +1233,11 @@ static void arpg_unique_art_init()
     arpg_log("ARPG: unique item art: %d of %d found\n", found, UNIQUE_ITEM_COUNT - 1);
 }
 
+void arpg_art_init()
+{
+    arpg_unique_art_init();
+}
+
 // item_inv_fid() hook: a unique's own inventory art, or -1.
 int arpg_item_inv_fid(Object* item)
 {

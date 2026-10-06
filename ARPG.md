@@ -93,6 +93,21 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
   Fist), Glow Torch (Flamer), Deathclaw Bane (Combat Shotgun), Vault Jacket of Ages (Leather Jacket), Scorpion
   Shell (Metal Armor), Lead Mantle (Leather Armor), Bulwark of the Hub (Combat Armor). Examine an item to see
   what its affixes do. Uniques sell for 4x.
+- **Diablo II homage uniques** (our own names, D2-style powers): Dust Devil (Sniper Rifle; Windforce), The
+  Granddaddy (Super Sledge; The Grandfather), Neon Saber (Ripper; Lightsabre), Stormwhip (Cattle Prod;
+  Stormlash), Doomsayer (Sledgehammer; Doombringer), Toll Collector (Spear; The Reaper's Toll), Hellraiser
+  (Super Sledge; Hellslayer), Skullbuster (Sledgehammer; The Cranium Basher), Nuka Frost (Combat Knife;
+  Frostwind), Rad Needle (Spear; Arioc's Needle), Eagle Eye (Hunting Rifle; Eaglehorn), Frostbite Kyanon (Laser
+  Rifle; Buriza-Do Kyanon), Demon Repeater (10mm SMG; Demon Machine), Starfall (Club; Baranar's Star), Reaver's
+  Bite (Crowbar; Messerschmidt's Reaver), Brainstorm Shiv (Knife; Wizardspike). Unique-only powers:
+  **knockback** (2 hexes; big multi-hex critters like radscorpions don't budge), **crushing blow** (20%: a
+  quarter of the target's current life, an eighth for champions/uniques), **chill** (+3-9 cold damage, the
+  target moves and attacks at half speed for 3 s).
+- **D2 item art (optional, local only)**: with a Diablo II install next to the workspace, run
+  `python tools/d2art/d2art.py` (from the workspace root). It pulls each homage unique's inventory picture out of
+  your own D2 MPQs and writes Fallout FRMs to `Fallout/DATA/art/inven` and `Fallout/DATA/art/items` (ground art
+  is the same picture laid on the floor). The game uses them for the inventory, the hand slot and the ground;
+  without them the base Fallout item's art is used. These files are never committed or shipped.
 - **Caps** are picked up just by walking past them.
 - **Death** works like Diablo II: a killing blow from a monster drops you for three seconds, then you rise again at
   the map entrance with full life, losing 10% of the caps you carry. Monsters forget you while you're down.
@@ -145,7 +160,8 @@ Design numbers (champion/unique life, XP and modifier list, pack sizes) come fro
 (`MonUMod.txt`, `MonStats.txt`, ...), read from a local D2 install with a small extractor built on
 [AbyssEngine](https://github.com/AbyssEngine/AbyssEngine)'s MIT-licensed MPQ reader. AbyssEngine (a clean-room
 D2 engine in C) is a reference and a source we may copy code from (keep its MIT notice). No Diablo II data,
-names or assets are included here.
+names or assets are included here: the optional D2 item art is generated on the player's machine from their own
+D2 install (`tools/d2art`).
 
 ## Code map
 - `src/game/arpg.cc` – real-time combat, AI tick, energy/specials, loot, hold-to-move, control schemes

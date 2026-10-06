@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "game/anim.h"
+#include "game/arpg.h"
 #include "game/automap.h"
 #include "game/combat.h"
 #include "game/critter.h"
@@ -300,6 +301,10 @@ int iso_init()
         debug_printf("art_init failed in iso_init\n");
         return -1;
     }
+
+    // ARPG: unique item art names go into the art lists before any map or
+    // save is loaded.
+    arpg_art_init();
 
     debug_printf(">art_init\t\t");
 

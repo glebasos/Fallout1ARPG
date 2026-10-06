@@ -98,6 +98,8 @@ int arpg_item_quality(Object* item);
 char* arpg_item_name(Object* item);
 // item_inv_fid() hook: a unique item's own inventory art, or -1.
 int arpg_item_inv_fid(Object* item);
+// Registers unique item art (called right after art_init).
+void arpg_art_init();
 // Examine text: writes line `index` of what the affixes do; false past the
 // last line.
 bool arpg_item_affix_text(Object* item, int index, char* out, int size);

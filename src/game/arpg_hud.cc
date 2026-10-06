@@ -782,7 +782,7 @@ static unsigned int tip_signature = 0;
 struct HotState {
     int counts[5];
     int energy;
-    int aimCost;
+    int aimCost[3]; // head, legs, eyes
     int specialCost;
     bool burst;
     bool canAim;
@@ -870,7 +870,7 @@ static void hotbar_state(HotState* state)
 
     state->energy = arpg_energy();
     state->dodgeCost = arpg_dodge_cost();
-    arpg_skill_costs(&state->aimCost, &state->specialCost, &state->burst, &state->canAim);
+    arpg_skill_costs(state->aimCost, &state->specialCost, &state->burst, &state->canAim);
 
     state->weaponFid = -1;
     state->ammo = -1;
@@ -905,7 +905,7 @@ static bool hotbar_usable(const HotSlot* slot, const HotState* state)
     case HOT_AIM_HEAD:
     case HOT_AIM_LEGS:
     case HOT_AIM_EYES:
-        return state->canAim && state->energy >= state->aimCost;
+        return state->canAim && state->energy >= state->aimCost[slot->kind - HOT_AIM_HEAD];
     case HOT_DODGE:
         return state->energy >= state->dodgeCost;
     case HOT_SPECIAL:
@@ -922,7 +922,7 @@ static int hotbar_cost(const HotSlot* slot, const HotState* state)
     case HOT_AIM_HEAD:
     case HOT_AIM_LEGS:
     case HOT_AIM_EYES:
-        return state->canAim ? state->aimCost : 0;
+        return state->canAim ? state->aimCost[slot->kind - HOT_AIM_HEAD] : 0;
     case HOT_DODGE:
         return state->dodgeCost;
     case HOT_SPECIAL:
@@ -1155,7 +1155,7 @@ static void hotbar_tooltip_text(const HotSlot* slot, const HotState* state, char
         if (!state->canAim) {
             snprintf(out, size, "%s: aimed shot at the %s - this weapon can't aim", slot->keyName, part);
         } else {
-            snprintf(out, size, "%s: aimed shot at the %s of the enemy nearest the cursor (%d energy)", slot->keyName, part, state->aimCost);
+            snprintf(out, size, "%s: aimed shot at the %s of the enemy nearest the cursor (%d energy)", slot->keyName, part, state->aimCost[slot->kind - HOT_AIM_HEAD]);
         }
         break;
     }
@@ -1326,7 +1326,7 @@ static void hud_update_hotbar(unsigned int now)
     for (int index = 0; index < hotbar_count; index++) {
         signature = signature * 31 + (hotbar_usable(&hotbar_slots[index], &state) ? 1 : 2);
     }
-    signature = signature * 31 + state.aimCost;
+    signature = signature * 31 + state.aimCost[0] + state.aimCost[1] * 7 + state.aimCost[2] * 13;
     signature = signature * 31 + state.specialCost;
     signature = signature * 31 + (state.burst ? 1 : 0) + (state.canAim ? 2 : 0);
     signature = signature * 31 + state.weaponFid;

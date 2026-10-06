@@ -369,6 +369,8 @@ static unsigned int next_range_warning = 0;
 // Control scheme.
 static int controls = ARPG_CONTROLS_POE;
 static int dodge_cost = 20;
+// Energy cost of the specials (arpg_special_cost), in percent.
+static int skill_cost_pct = 100;
 static unsigned int dodge_until = 0;
 static int wasd_dx = 0;
 static int wasd_dy = 0;
@@ -785,6 +787,7 @@ void arpg_init()
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "loot_pct", &loot_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "energy_regen_pct", &energy_regen_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "dodge_cost", &dodge_cost);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "skill_cost_pct", &skill_cost_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "attack_anim_pct", &attack_anim_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "aim_anim_pct", &aim_anim_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "enemy_attack_anim_pct", &enemy_attack_anim_pct);
@@ -3608,11 +3611,38 @@ int arpg_dodge_cost()
     return dodge_cost;
 }
 
+// Energy cost of a special: a base per skill (legs 15, head 20, eyes 30,
+// burst 25) scaled by how slow the weapon is (its AP / 5, so a 3 AP knife
+// pays 60%, a 6 AP burst 120%), times skill_cost_pct, capped at 40% of the
+// energy pool so any build can use every special twice from a full bar.
+// (Vanilla pricing, 10 energy per AP of the aimed attack, put a 6 AP shot at
+// 60 energy: out of reach for a 5 AP character.)
+static int arpg_special_cost(int hitMode, bool aimed, int hitLocation)
+{
+    int base;
+    if (!aimed) {
+        base = 25;
+    } else if (hitLocation == HIT_LOCATION_EYES) {
+        base = 30;
+    } else if (hitLocation == HIT_LOCATION_LEFT_LEG || hitLocation == HIT_LOCATION_RIGHT_LEG) {
+        base = 15;
+    } else {
+        base = 20;
+    }
+    int ap = std::max(1, item_w_mp_cost(obj_dude, hitMode, false));
+    int cost = (base * ap * skill_cost_pct + 250) / 500;
+    cost = std::min(cost, arpg_energy_max() * 2 / 5);
+    return std::max(cost, 5);
+}
+
 // Mirrors the special-attack rules in the player tick: Q/E/T aim with the
 // active hit mode, right click bursts when the weapon can, else aims.
-bool arpg_skill_costs(int* aimCost, int* specialCost, bool* burst, bool* canAim)
+// aimCosts: head, legs, eyes.
+bool arpg_skill_costs(int* aimCosts, int* specialCost, bool* burst, bool* canAim)
 {
-    *aimCost = 0;
+    aimCosts[0] = 0;
+    aimCosts[1] = 0;
+    aimCosts[2] = 0;
     *specialCost = 0;
     *burst = false;
     *canAim = false;
@@ -3624,7 +3654,9 @@ bool arpg_skill_costs(int* aimCost, int* specialCost, bool* burst, bool* canAim)
     }
 
     *canAim = item_w_called_shot(obj_dude, hitMode) != 0;
-    *aimCost = item_w_mp_cost(obj_dude, hitMode, true) * 10;
+    aimCosts[0] = arpg_special_cost(hitMode, true, HIT_LOCATION_HEAD);
+    aimCosts[1] = arpg_special_cost(hitMode, true, HIT_LOCATION_LEFT_LEG);
+    aimCosts[2] = arpg_special_cost(hitMode, true, HIT_LOCATION_EYES);
 
     int specialMode = hitMode;
     bool aimed = true;
@@ -3636,7 +3668,7 @@ bool arpg_skill_costs(int* aimCost, int* specialCost, bool* burst, bool* canAim)
             *burst = true;
         }
     }
-    *specialCost = item_w_mp_cost(obj_dude, specialMode, aimed) * 10;
+    *specialCost = arpg_special_cost(specialMode, aimed, HIT_LOCATION_HEAD);
     return true;
 }
 
@@ -3822,7 +3854,7 @@ static void arpg_player_tick(unsigned int now)
 
     if (player_special) {
         // Right-click special: burst fire if the weapon has it, otherwise an
-        // aimed shot at the head. Costs energy (10 per AP).
+        // aimed shot at the head. Costs energy (arpg_special_cost).
         player_special = false;
 
         int specialMode = hitMode;
@@ -3845,7 +3877,7 @@ static void arpg_player_tick(unsigned int now)
             }
         }
 
-        int cost = item_w_mp_cost(obj_dude, specialMode, aimed) * 10;
+        int cost = arpg_special_cost(specialMode, aimed, aimLocation != -1 ? aimLocation : HIT_LOCATION_HEAD);
         if (aimLocation != -1 && !aimed) {
             cost = 0;
         } else if (arpg_energy() < cost) {

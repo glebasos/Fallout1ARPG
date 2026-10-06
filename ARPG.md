@@ -27,6 +27,7 @@ loot labels are drawn in the map and scale with it.
 | Right-click an enemy | Special: burst fire if the weapon has it, else aimed head shot (costs Energy). A near miss snaps to the enemy within 2 hexes of the cursor (else your current target); right-click never switches the cursor mode in poe/wasd |
 | **F** | Switch the cursor between move/attack and use/talk/look (Fallout's old right-click); right-click also switches back from use. `rmb_toggles_mode=1` restores the vanilla right-click |
 | **Q / E / T** | Skill bar: aimed shot at the head / legs / eyes of the enemy near the cursor (costs Energy) |
+| | Special costs: legs 15, head 20, eyes 30, burst 25 Energy, times weapon AP / 5 (a knife pays less, a minigun more), never more than 40% of your Energy bar (so every build gets at least two from a full bar) |
 | R | Reload |
 | **1–5** | Flasks: 1 (super) stimpak, 2 RadAway / Rad-X, 3 Buffout, 4 Mentats, 5 Psycho / Nuka-Cola |
 | **Space** | Dodge roll toward the cursor, with 0.6 s of invulnerability (20 Energy) |
@@ -148,7 +149,7 @@ Click a row to change it; hovering shows what it does. Changes apply at once (pa
 area, ARPG mode after a restart) and are saved to the `[arpg]` keys below when the page closes.
 
 ## Config (`[arpg]` in fallout.cfg)
-`enabled`, `controls` (poe/wasd/classic), `dodge_cost` (20), `always_run`, `hold_to_move`, `rmb_toggles_mode` (0), `damage_numbers`, `globes`, `loot_drops`, `inventory_drops` (1), `loot_pct`,
+`enabled`, `controls` (poe/wasd/classic), `dodge_cost` (20), `skill_cost_pct` (100; scales the special costs), `always_run`, `hold_to_move`, `rmb_toggles_mode` (0), `damage_numbers`, `globes`, `loot_drops`, `inventory_drops` (1), `loot_pct`,
 `energy_regen_pct`, `enemy_attack_delay_pct` (130), `player_attack_delay_pct` (100), `stagger_pct`,
 `player_stagger_pct`, `stagger_immunity_ms`, `leash_distance`, `labels_always`, `loot_highlight` (1), `enemy_outline` (1), `screen_cursor` (1), `auto_caps`, `auto_consumables` (1), `auto_ammo` (1), `respawn` (1),
 `respawn_caps_pct` (10).

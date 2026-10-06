@@ -2223,6 +2223,14 @@ void obj_bound(Object* obj, Rect* rect)
         isOutlined = true;
     }
 
+    // The ARPG enemy outline is drawn 1px outside the sprite but never stored
+    // in obj->outline; without the margin a moving enemy leaves red trails.
+    // Every critter gets it, so one that just died or calmed down still has
+    // its last outline erased.
+    if (FID_TYPE(obj->fid) == OBJ_TYPE_CRITTER && arpg_enabled()) {
+        isOutlined = true;
+    }
+
     CacheEntry* artHandle;
     Art* art = art_ptr_lock(obj->fid, &artHandle);
     if (art == NULL) {
@@ -4592,7 +4600,10 @@ static void obj_render_outline(Object* object, Rect* rect)
             }
 
             if (*(src15 - 1) != 0) {
-                if (v22 < buf_size) {
+                // CE: also skip when dest14 wrapped to column 0 of the next
+                // row (sprite touching the right edge of the buffer), which
+                // left stray outline pixels on the left edge.
+                if (v22 < buf_size && (dest14 - back_buf) % buf_full != 0) {
                     int v23 = frameWidth - 1;
                     if (v23 >= v49.ulx && v23 <= v49.lrx && y >= v49.uly && y <= v49.lry) {
                         if (v53 != 0) {

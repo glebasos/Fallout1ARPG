@@ -28,6 +28,7 @@ void tile_refresh_display();
 int tile_set_center(int tile, int flags);
 // ARPG zoom: points the renderer at another buffer (same center tile).
 void tile_set_buffer(unsigned char* buffer, int width, int height, int pitch);
+void tile_set_fine_offset(int x, int y);
 void tile_toggle_roof(int a1);
 int tile_roof_visible();
 int tile_coord(int tile, int* x, int* y, int elevation);

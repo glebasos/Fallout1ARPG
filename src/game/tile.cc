@@ -209,6 +209,11 @@ static int square_offx;
 // 0x668E18
 static int square_offy;
 
+// ARPG camera: whole-view pixel shift on top of the center tile, so the view
+// can follow the player between hexes (tile_set_fine_offset).
+static int tile_fine_x;
+static int tile_fine_y;
+
 // 0x668E1C
 static int buf_length;
 
@@ -540,6 +545,8 @@ int tile_set_center(int tile, int flags)
     tile_offx = (buf_width - 32) / 2;
     tile_x = new_tile_x;
     tile_offy = (buf_length - 16) / 2;
+    tile_offx += tile_fine_x;
+    tile_offy += tile_fine_y;
 
     if (tile_x & 1) {
         tile_x -= 1;
@@ -581,6 +588,24 @@ void tile_set_buffer(unsigned char* buffer, int width, int height, int pitch)
     buf_rect.uly = 0;
     buf_rect.lrx = width - 1;
     buf_rect.lry = height - 1;
+
+    bool wasBorder = borderInitialized;
+    borderInitialized = false;
+    tile_set_center(tile_center_tile, TILE_SET_CENTER_FLAG_IGNORE_SCROLL_RESTRICTIONS);
+    borderInitialized = wasBorder;
+}
+
+// ARPG camera: shifts the whole view by (x, y) pixels relative to the center
+// tile. Every screen<->tile conversion goes through tile_offx/tile_offy, so
+// the mouse, objects and text follow. The caller redraws.
+void tile_set_fine_offset(int x, int y)
+{
+    if (x == tile_fine_x && y == tile_fine_y) {
+        return;
+    }
+
+    tile_fine_x = x;
+    tile_fine_y = y;
 
     bool wasBorder = borderInitialized;
     borderInitialized = false;

@@ -5897,23 +5897,39 @@ static void arpg_camera_follow()
     }
 }
 
-// Camera locked on the player (camera_center). With camera_look the cursor
-// pulls the view toward it while the player stands still (up to a quarter
-// view past the player); as soon as the player moves it eases back onto them.
+// Camera locked on the player (camera_center). The view follows the player's
+// exact pixel position (center tile + tile_set_fine_offset), not just their
+// hex, so the world doesn't jump a hex at a time under a smoothly moving
+// sprite. With camera_look the cursor pulls the view toward it while the
+// player stands still (up to a quarter view past the player); as soon as the
+// player moves it eases back onto them.
 static void arpg_camera_tick(unsigned int now)
 {
-    static unsigned int lastStep = 0;
+    static unsigned int lastTick = 0;
     static unsigned int movedAt = 0;
     static int lastDudeTile = -1;
+    static int fineX = 0;
+    static int fineY = 0;
+    // Current cursor pull, eased toward the wanted one.
+    static double lookX = 0.0;
+    static double lookY = 0.0;
 
     if (!camera_center) {
+        if (fineX != 0 || fineY != 0) {
+            fineX = 0;
+            fineY = 0;
+            tile_set_fine_offset(0, 0);
+            tile_refresh_display();
+        }
         lastDudeTile = -1;
+        lastTick = 0;
+        lookX = 0.0;
+        lookY = 0.0;
         return;
     }
-    if (now - lastStep < 30) {
-        return;
-    }
-    lastStep = now;
+
+    unsigned int dt = lastTick != 0 ? std::min(now - lastTick, 100u) : 0;
+    lastTick = now;
 
     int elevation = obj_dude->elevation;
     int x;
@@ -5928,15 +5944,15 @@ static void arpg_camera_tick(unsigned int now)
         movedAt = now;
     }
     bool moving = now - movedAt < 300;
+    bool looking = camera_look && !moving;
 
     int width;
     int height;
     arpg_zoom_view_size(&width, &height);
 
-    // Where the view's center should be, in tile_coord space.
-    int targetX = x + 16;
-    int targetY = y + 8;
-    if (camera_look && !moving) {
+    double wantX = 0.0;
+    double wantY = 0.0;
+    if (looking) {
         if (arpg_test && autotest_camera_look != 0) {
             mouse_set_position(scr_size.lrx - 20, (scr_size.uly + scr_size.lry) / 3);
         }
@@ -5950,50 +5966,60 @@ static void arpg_camera_tick(unsigned int now)
         int deadY = height / 8;
         offX = offX > deadX ? offX - deadX : (offX < -deadX ? offX + deadX : 0);
         offY = offY > deadY ? offY - deadY : (offY < -deadY ? offY + deadY : 0);
-        targetX += offX * 2 / 3;
-        targetY += offY * 2 / 3;
+        wantX = offX * 2.0 / 3.0;
+        wantY = offY * 2.0 / 3.0;
     }
 
-    // Ease toward the target: a third of the way per step, snapping once
-    // close (a running player stays in the snap range).
-    int centerX;
-    int centerY;
-    if (tile_coord(tile_center_tile, &centerX, &centerY, elevation) == -1) {
-        return;
+    double ease = 1.0 - exp(-(double)dt / 120.0);
+    lookX += (wantX - lookX) * ease;
+    lookY += (wantY - lookY) * ease;
+    if (fabs(wantX - lookX) < 0.5 && fabs(wantY - lookY) < 0.5) {
+        lookX = wantX;
+        lookY = wantY;
     }
-    centerX += 16;
-    centerY += 8;
-    double distX = targetX - centerX;
-    double distY = targetY - centerY;
-    double dist = sqrt(distX * distX + distY * distY);
-    int tile;
-    if (dist < 24.0) {
-        tile = tile_num(targetX, targetY, elevation);
-    } else {
-        double step = std::max(24.0, dist / 3.0) / dist;
-        tile = tile_num(centerX + (int)lround(distX * step), centerY + (int)lround(distY * step), elevation);
-        if (tile == tile_center_tile) {
-            tile = tile_num(targetX, targetY, elevation);
-        }
-    }
+
+    // The pixel to put at the middle of the view: the player's feet (hex
+    // center plus the in-hex offset the walk/run frames have built up) plus
+    // the cursor pull.
+    int targetX = x + 16 + obj_dude->x + (int)lround(lookX);
+    int targetY = y + 8 + obj_dude->y + (int)lround(lookY);
+    int middleX = width / 2;
+    int middleY = height / 2;
+
     if (arpg_test) {
         static unsigned int lastLog = 0;
         if (now - lastLog > 1000) {
             lastLog = now;
-            arpg_log("ARPG autotest: camera dude off %d,%d target off %d,%d moving=%d view %dx%d\n",
-                x + 16 - centerX, y + 8 - centerY, targetX - centerX, targetY - centerY, moving, width, height);
+            arpg_log("ARPG autotest: camera dude off %d,%d look %d,%d fine %d,%d moving=%d view %dx%d\n",
+                x + 16 + obj_dude->x - middleX, y + 8 + obj_dude->y - middleY, (int)lround(lookX), (int)lround(lookY), fineX, fineY, moving, width, height);
         }
     }
-    if (tile == -1 || tile == tile_center_tile) {
+
+    if (targetX == middleX && targetY == middleY) {
         return;
     }
 
     gmouse_3d_off();
-    if (tile_set_center(tile, TILE_SET_CENTER_REFRESH_WINDOW) == -1 && arpg_zoom_pct() > 100 && !(camera_look && !moving)) {
-        // Fallout's scroll blockers keep a 640x480 view inside the map; a
-        // zoomed-in view is smaller, so still center on the player there.
-        tile_set_center(tile, TILE_SET_CENTER_FLAG_IGNORE_SCROLL_RESTRICTIONS | TILE_SET_CENTER_REFRESH_WINDOW);
+
+    // Whole hexes first, so the pixel shift stays small.
+    int tile = tile_num(targetX, targetY, elevation);
+    if (tile != -1 && tile != tile_center_tile) {
+        if (tile_set_center(tile, 0) == -1 && arpg_zoom_pct() > 100 && !looking) {
+            // Fallout's scroll blockers keep a 640x480 view inside the map; a
+            // zoomed-in view is smaller, so still center on the player there.
+            tile_set_center(tile, TILE_SET_CENTER_FLAG_IGNORE_SCROLL_RESTRICTIONS);
+        }
+        tile_coord(obj_dude->tile, &x, &y, elevation);
+        targetX = x + 16 + obj_dude->x + (int)lround(lookX);
+        targetY = y + 8 + obj_dude->y + (int)lround(lookY);
     }
+
+    // Then the rest in pixels. Capped near a hex, so a scroll blocker that
+    // stopped the hex step above still stops the view.
+    fineX = std::max(-48, std::min(fineX + middleX - targetX, 48));
+    fineY = std::max(-32, std::min(fineY + middleY - targetY, 32));
+    tile_set_fine_offset(fineX, fineY);
+    tile_refresh_display();
 }
 
 // The player's measured run speed: hexes and milliseconds spent in the run

@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "game/anim.h"
+#include "game/arpg.h"
 #include "game/automap.h"
 #include "game/combat.h"
 #include "game/critter.h"
@@ -514,6 +515,11 @@ static bool item_identical(Object* a1, Object* a2)
         return false;
     }
 
+    // ARPG: a magic item never stacks with a plain or differently enchanted one.
+    if (((a1->flags ^ a2->flags) & ARPG_ITEM_AFFIX_MASK) != 0) {
+        return false;
+    }
+
     if ((a1->flags & (OBJECT_EQUIPPED | OBJECT_USED)) != 0) {
         return false;
     }
@@ -566,6 +572,12 @@ char* item_name(Object* obj)
 
     // 0x5057DC
     static char* name = _name;
+
+    // ARPG: magic and rare items carry their affixes in the name.
+    char* magic = arpg_item_name(obj);
+    if (magic != NULL) {
+        return magic;
+    }
 
     name = proto_name(obj->pid);
     return name;
@@ -692,6 +704,12 @@ int item_cost(Object* obj)
             cost /= ammoCapacity;
         }
         break;
+    }
+
+    // ARPG: magic items are worth more, rare ones more still.
+    int quality = arpg_item_quality(obj);
+    if (quality > 0) {
+        cost = cost * (quality == 2 ? 5 : 3) / 2;
     }
 
     return cost;

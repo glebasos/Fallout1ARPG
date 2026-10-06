@@ -735,12 +735,16 @@ static int label_color(Object* item)
         return rgb5(10, 30, 10);
     case ITEM_TYPE_WEAPON:
     case ITEM_TYPE_ARMOR:
-        // Diablo-style quality colors keyed off value.
-        if (proto->item.cost >= 3000) {
-            return rgb5(31, 22, 6); // unique gold
+        // Diablo II colors: yellow rare, blue magic, gold for the best base
+        // gear (power armor and the like), white for the rest.
+        switch (arpg_item_quality(item)) {
+        case 2:
+            return rgb5(31, 31, 8);
+        case 1:
+            return rgb5(12, 16, 31);
         }
-        if (proto->item.cost >= 1000) {
-            return rgb5(12, 16, 31); // magic blue
+        if (proto->item.cost >= 3000) {
+            return rgb5(31, 22, 6);
         }
         return colorTable[32767];
     default:

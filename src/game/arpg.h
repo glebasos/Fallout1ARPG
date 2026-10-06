@@ -81,6 +81,20 @@ int arpg_anim_speed_pct(Object* obj, int fid);
 // True for monsters spawned by the pack system (never saved).
 bool arpg_is_spawned(Object* obj);
 
+// Magic item affixes, stored in object flag bits vanilla never uses (so they
+// are saved with the item): prefix index in 0x00F00000, suffix index in
+// 0x000003C0. 0 = none.
+#define ARPG_ITEM_PREFIX_SHIFT 20
+#define ARPG_ITEM_PREFIX_MASK 0x00F00000
+#define ARPG_ITEM_SUFFIX_SHIFT 6
+#define ARPG_ITEM_SUFFIX_MASK 0x000003C0
+#define ARPG_ITEM_AFFIX_MASK (ARPG_ITEM_PREFIX_MASK | ARPG_ITEM_SUFFIX_MASK)
+
+// Magic items: 0 normal, 1 magic (blue), 2 rare (yellow).
+int arpg_item_quality(Object* item);
+// item_name() hook: the affixed name of a magic or rare item, else NULL.
+char* arpg_item_name(Object* item);
+
 // Diablo-style monster rank for the HUD: 0 normal, 1 minion, 2 champion,
 // 3 unique. Fills the display name and the modifier list ("Champion",
 // "Extra Fast, Fire Enchanted"). Returns false for ordinary critters.

@@ -185,6 +185,7 @@ static int pack_respawn_hours = 12;
 static int max_spawns = 60;
 static int aggro_radius = 9;
 static int stat_spawned = 0;
+static int stat_clone_scripts = 0;
 
 // Shrines (D2 Shrines.txt: boosters last 96 or 144 s).
 enum {
@@ -299,6 +300,7 @@ static int autotest_die = 0;
 static bool autotest_shrines = false;
 static bool autotest_gallery = false;
 static bool autotest_swarm = false;
+static int autotest_magic = 0;
 
 static unsigned int next_hold_action = 0;
 static int hold_last_tile = -1;
@@ -469,6 +471,7 @@ bool arpg_is_spawned(Object* obj)
 }
 
 static int arpg_monster_speed_pct(Object* critter);
+static int arpg_dude_attack_speed_pct();
 
 // Percent of an animation's normal frame rate (compute_tpf hook). Attacks,
 // aiming, hit recovery and running are faster, Diablo style; everything else
@@ -504,7 +507,7 @@ int arpg_anim_speed_pct(Object* obj, int fid)
     case ANIM_FIRE_SINGLE:
     case ANIM_FIRE_BURST:
     case ANIM_FIRE_CONTINUOUS:
-        pct = dude ? attack_anim_pct : enemy_attack_anim_pct;
+        pct = dude ? attack_anim_pct * arpg_dude_attack_speed_pct() / 100 : enemy_attack_anim_pct;
         break;
     case ANIM_WALK:
     case ANIM_RUNNING:
@@ -607,6 +610,7 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_shrines", &autotest_shrines);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_gallery", &autotest_gallery);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_swarm", &autotest_swarm);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_magic", &autotest_magic);
     // Autotest: hold a WASD direction (0=W 1=D 2=S 3=A) through the real
     // movement path.
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_wasd", &autotest_wasd);
@@ -624,7 +628,7 @@ void arpg_init()
 
     // Command-line test switches are merged into game_config, which CE saves
     // back to fallout.cfg on exit. Neutralize them so they don't stick.
-    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_swarm" };
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_swarm", "autotest_magic" };
     for (const char* key : testKeys) {
         char* value;
         if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
@@ -907,6 +911,203 @@ static int arpg_monster_speed_pct(Object* critter)
     return monster != NULL ? monster->speedPct : 100;
 }
 
+// ---------------------------------------------------------------------------
+// Magic items (D2 MagicPrefix/MagicSuffix, Fallout flavoured). One affix makes
+// a magic (blue) item, a prefix and a suffix a rare (yellow) one. Affixes are
+// stored in unused object flag bits, so they are saved with the item.
+// ---------------------------------------------------------------------------
+
+enum {
+    WPRE_NONE,
+    WPRE_VICIOUS, // +25% damage
+    WPRE_BRUTAL, // +50% damage
+    WPRE_BURNING, // +2..6 damage
+    WPRE_SHOCKING, // +3..8 damage
+    WPRE_VAMPIRIC, // heal 10% of damage dealt
+    WPRE_DEADLY, // 15% chance of double damage
+    WPRE_COUNT,
+};
+
+enum {
+    WSUF_NONE,
+    WSUF_SPEED, // attacks 25% faster
+    WSUF_HASTE, // attacks 50% faster
+    WSUF_LEECH, // heal 15% of damage dealt
+    WSUF_SLAYING, // +40% damage to champions and uniques
+    WSUF_FORTUNE, // more loot
+    WSUF_POWER, // +15% damage
+    WSUF_COUNT,
+};
+
+enum {
+    APRE_NONE,
+    APRE_STURDY, // -10% damage taken
+    APRE_REINFORCED, // -20% damage taken
+    APRE_REGENERATING, // +1 HP every 4 s
+    APRE_LEAD_LINED, // sheds radiation
+    APRE_COUNT,
+};
+
+enum {
+    ASUF_NONE,
+    ASUF_THORNS, // melee attackers take 30% of their damage
+    ASUF_VIGOR, // +50% energy regeneration
+    ASUF_EVASION, // 10% of hits miss
+    ASUF_FORTUNE, // more loot
+    ASUF_COUNT,
+};
+
+static const char* weapon_prefix_names[WPRE_COUNT] = { "", "Vicious", "Brutal", "Burning", "Shocking", "Vampiric", "Deadly" };
+static const char* weapon_suffix_names[WSUF_COUNT] = { "", "of Speed", "of Haste", "of the Leech", "of Slaying", "of Fortune", "of Power" };
+static const char* armor_prefix_names[APRE_COUNT] = { "", "Sturdy", "Reinforced", "Regenerating", "Lead-Lined" };
+static const char* armor_suffix_names[ASUF_COUNT] = { "", "of Thorns", "of Vigor", "of Evasion", "of Fortune" };
+
+static int arpg_item_prefix(Object* item)
+{
+    return item != NULL ? (item->flags & ARPG_ITEM_PREFIX_MASK) >> ARPG_ITEM_PREFIX_SHIFT : 0;
+}
+
+static int arpg_item_suffix(Object* item)
+{
+    return item != NULL ? (item->flags & ARPG_ITEM_SUFFIX_MASK) >> ARPG_ITEM_SUFFIX_SHIFT : 0;
+}
+
+// 0 normal, 1 magic, 2 rare.
+int arpg_item_quality(Object* item)
+{
+    if (item == NULL || PID_TYPE(item->pid) != OBJ_TYPE_ITEM) {
+        return 0;
+    }
+    int type = item_get_type(item);
+    if (type != ITEM_TYPE_WEAPON && type != ITEM_TYPE_ARMOR) {
+        return 0;
+    }
+    return (arpg_item_prefix(item) != 0 ? 1 : 0) + (arpg_item_suffix(item) != 0 ? 1 : 0);
+}
+
+// item_name() hook: "Vicious 10mm Pistol of Speed", or NULL for plain items.
+char* arpg_item_name(Object* item)
+{
+    if (!arpg_on || arpg_item_quality(item) == 0) {
+        return NULL;
+    }
+
+    bool weapon = item_get_type(item) == ITEM_TYPE_WEAPON;
+    int prefix = arpg_item_prefix(item);
+    int suffix = arpg_item_suffix(item);
+    const char* prefixName = "";
+    const char* suffixName = "";
+    if (weapon) {
+        prefixName = prefix < WPRE_COUNT ? weapon_prefix_names[prefix] : "";
+        suffixName = suffix < WSUF_COUNT ? weapon_suffix_names[suffix] : "";
+    } else {
+        prefixName = prefix < APRE_COUNT ? armor_prefix_names[prefix] : "";
+        suffixName = suffix < ASUF_COUNT ? armor_suffix_names[suffix] : "";
+    }
+
+    static char buffers[4][96];
+    static int next = 0;
+    char* buffer = buffers[next];
+    next = (next + 1) % 4;
+    snprintf(buffer, 96, "%s%s%s%s%s",
+        prefixName,
+        prefixName[0] != '\0' ? " " : "",
+        proto_name(item->pid),
+        suffixName[0] != '\0' ? " " : "",
+        suffixName);
+    return buffer;
+}
+
+// Rolls magic or rare affixes onto a freshly dropped weapon or armor.
+// `findPct` scales the chances (D2 magic find): 100 normal.
+static void arpg_roll_magic(Object* item, int findPct, bool atLeastMagic)
+{
+    if (item == NULL) {
+        return;
+    }
+    int type = item_get_type(item);
+    if (type != ITEM_TYPE_WEAPON && type != ITEM_TYPE_ARMOR) {
+        return;
+    }
+
+    int roll = roll_random(1, 1000);
+    bool rare = roll <= 60 * findPct / 100;
+    bool magic = rare || atLeastMagic || roll <= 300 * findPct / 100;
+    if (!magic) {
+        return;
+    }
+
+    int prefixCount = type == ITEM_TYPE_WEAPON ? WPRE_COUNT : APRE_COUNT;
+    int suffixCount = type == ITEM_TYPE_WEAPON ? WSUF_COUNT : ASUF_COUNT;
+    int prefix = 0;
+    int suffix = 0;
+    if (rare) {
+        prefix = roll_random(1, prefixCount - 1);
+        suffix = roll_random(1, suffixCount - 1);
+    } else if (roll_random(0, 1) == 0) {
+        prefix = roll_random(1, prefixCount - 1);
+    } else {
+        suffix = roll_random(1, suffixCount - 1);
+    }
+
+    item->flags &= ~ARPG_ITEM_AFFIX_MASK;
+    item->flags |= (prefix << ARPG_ITEM_PREFIX_SHIFT) & ARPG_ITEM_PREFIX_MASK;
+    item->flags |= (suffix << ARPG_ITEM_SUFFIX_SHIFT) & ARPG_ITEM_SUFFIX_MASK;
+}
+
+// The player's weapon for `hitMode`, and the armor being worn.
+static Object* arpg_dude_weapon()
+{
+    int hitMode;
+    bool aiming;
+    if (obj_dude == NULL || intface_get_attack(&hitMode, &aiming) == -1) {
+        return NULL;
+    }
+    Object* weapon = item_hit_with(obj_dude, hitMode);
+    return weapon != NULL && item_get_type(weapon) == ITEM_TYPE_WEAPON ? weapon : NULL;
+}
+
+static Object* arpg_dude_armor()
+{
+    return obj_dude != NULL ? inven_worn(obj_dude) : NULL;
+}
+
+static bool arpg_dude_has(bool weapon, int prefix, int suffix)
+{
+    Object* item = weapon ? arpg_dude_weapon() : arpg_dude_armor();
+    if (item == NULL) {
+        return false;
+    }
+    return (prefix != 0 && arpg_item_prefix(item) == prefix) || (suffix != 0 && arpg_item_suffix(item) == suffix);
+}
+
+// Weapon speed affixes (D2 increased attack speed), in percent.
+static int arpg_dude_attack_speed_pct()
+{
+    Object* weapon = arpg_dude_weapon();
+    switch (arpg_item_suffix(weapon)) {
+    case WSUF_SPEED:
+        return 125;
+    case WSUF_HASTE:
+        return 150;
+    default:
+        return 100;
+    }
+}
+
+// Magic find from Fortune affixes.
+static int arpg_dude_find_pct()
+{
+    int pct = 100;
+    if (arpg_dude_has(true, 0, WSUF_FORTUNE)) {
+        pct += 50;
+    }
+    if (arpg_dude_has(false, 0, ASUF_FORTUNE)) {
+        pct += 50;
+    }
+    return pct;
+}
+
 // Log name with a rank tag: "Radscorpion", "Radscorpion[C]", "Grimspine[U]".
 static const char* arpg_label(Object* critter)
 {
@@ -1143,6 +1344,15 @@ static Object* arpg_spawn_clone(Object* seed, bool allowKin = true)
         return NULL;
     }
 
+    // obj_new attaches the proto's script, if any. Pack monsters run on our
+    // AI alone, and a script whose owner is never saved would be orphaned in
+    // the save.
+    if (clone->sid != -1) {
+        scr_remove(clone->sid);
+        clone->sid = -1;
+        stat_clone_scripts++;
+    }
+
     // Never saved: packs are rolled again when the map is entered again.
     clone->flags |= OBJECT_NO_SAVE | ARPG_OBJECT_SPAWNED;
     // Same side as the seed so the pack fights together; kin keep their own
@@ -1190,6 +1400,21 @@ static void arpg_populate_level()
         return;
     }
     populated_levels.push_back(key);
+
+    if (arpg_test) {
+        // Magic item affixes live in object flag bits vanilla never uses;
+        // prove no shipped map sets them.
+        int flagged = 0;
+        for (Object* obj = obj_find_first_at(map_elevation); obj != NULL; obj = obj_find_next_at()) {
+            if ((obj->flags & ARPG_ITEM_AFFIX_MASK) != 0) {
+                flagged++;
+                if (flagged <= 3) {
+                    arpg_log("ARPG: affix bits set on pid %d flags 0x%x\n", obj->pid, obj->flags);
+                }
+            }
+        }
+        arpg_log("ARPG: level %d affix-bit objects: %d\n", key, flagged);
+    }
 
     // Packs don't respawn until some game time has passed since they were
     // last spawned here (loading an older save always respawns).
@@ -1314,8 +1539,8 @@ static void arpg_populate_level()
         }
     }
 
-    arpg_log("ARPG: populated level %d: %d seeds, %d spawned (%d champions, %d uniques)\n",
-        key, (int)seeds.size(), spawned, champions, uniques);
+    arpg_log("ARPG: populated level %d: %d seeds, %d spawned (%d champions, %d uniques, %d proto scripts removed)\n",
+        key, (int)seeds.size(), spawned, champions, uniques, stat_clone_scripts);
 
     arpg_spawn_shrines(seeds);
 
@@ -1455,6 +1680,10 @@ static void arpg_spawn_shrines(const std::vector<Object*>& seeds)
         if (obj_pid_new(&obj, shrine_pid) != 0) {
             continue;
         }
+        if (obj->sid != -1) {
+            scr_remove(obj->sid);
+            obj->sid = -1;
+        }
         obj->flags |= OBJECT_NO_SAVE | ARPG_OBJECT_SPAWNED;
         Rect rect;
         obj_move_to_tile(obj, tile, seed->elevation, &rect);
@@ -1591,6 +1820,51 @@ static void arpg_scale_damage(Attack* attack)
         double value = *damage * (100 + bonus) / 100.0;
         if (fire) {
             value += roll_random(2, 6);
+        }
+
+        // Magic weapon and armor affixes.
+        if (attack->attacker == obj_dude && attack->weapon != NULL && arpg_item_quality(attack->weapon) > 0) {
+            switch (arpg_item_prefix(attack->weapon)) {
+            case WPRE_VICIOUS:
+                value *= 1.25;
+                break;
+            case WPRE_BRUTAL:
+                value *= 1.5;
+                break;
+            case WPRE_BURNING:
+                value += roll_random(2, 6);
+                break;
+            case WPRE_SHOCKING:
+                value += roll_random(3, 8);
+                break;
+            case WPRE_DEADLY:
+                if (roll_random(1, 100) <= 15) {
+                    value *= 2.0;
+                }
+                break;
+            }
+            switch (arpg_item_suffix(attack->weapon)) {
+            case WSUF_SLAYING: {
+                ArpgMonster* target = arpg_monster(victim);
+                if (target != NULL && target->rank >= RANK_CHAMPION) {
+                    value *= 1.4;
+                }
+                break;
+            }
+            case WSUF_POWER:
+                value *= 1.15;
+                break;
+            }
+        }
+        if (victim == obj_dude) {
+            switch (arpg_item_prefix(arpg_dude_armor())) {
+            case APRE_STURDY:
+                value *= 0.9;
+                break;
+            case APRE_REINFORCED:
+                value *= 0.8;
+                break;
+            }
         }
         // Shrine boosts.
         if (attack->attacker == obj_dude && arpg_buff(SHRINE_COMBAT)) {
@@ -2155,6 +2429,16 @@ static void arpg_resolve(ArpgAttack* aa)
 
     bool hit = (attack->attackerFlags & DAM_HIT) != 0;
 
+    // Armor "of Evasion": one hit in ten misses.
+    if (hit && defender == obj_dude && arpg_dude_has(false, 0, ASUF_EVASION) && roll_random(1, 100) <= 10) {
+        attack->attackerFlags &= ~(DAM_HIT | DAM_CRITICAL);
+        attack->defenderFlags = 0;
+        attack->defenderDamage = 0;
+        attack->defenderKnockback = 0;
+        hit = false;
+        arpg_float_text(obj_dude, "evade", colorTable[21140]);
+    }
+
     if (hit && defender == obj_dude && get_time() < dodge_until) {
         // Dodge roll i-frames: the blow lands on empty air.
         attack->attackerFlags &= ~(DAM_HIT | DAM_CRITICAL);
@@ -2240,6 +2524,43 @@ static void arpg_resolve(ArpgAttack* aa)
     // Monster modifiers that trigger on a hit on the player.
     if (hit && defender == obj_dude && attack->defenderDamage > 0) {
         arpg_on_hit_effects(attacker, attack->defenderDamage);
+    }
+
+    // Life stealing weapons (Vampiric, of the Leech).
+    if (hit && attacker == obj_dude && attack->defenderDamage > 0 && attack->weapon != NULL) {
+        int pct = (arpg_item_prefix(attack->weapon) == WPRE_VAMPIRIC ? 10 : 0)
+            + (arpg_item_suffix(attack->weapon) == WSUF_LEECH ? 15 : 0);
+        if (pct > 0 && arpg_item_quality(attack->weapon) > 0) {
+            int heal = attack->defenderDamage * pct / 100;
+            if (heal == 0 && roll_random(1, 100) <= attack->defenderDamage * pct) {
+                heal = 1;
+            }
+            if (heal > 0 && critter_get_hits(obj_dude) < stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS)) {
+                critter_adjust_hits(obj_dude, heal);
+                intface_update_hit_points(false);
+            }
+        }
+    }
+
+    // Armor "of Thorns": melee attackers take 30% of the damage they deal.
+    bool melee = aa->anim == ANIM_THROW_PUNCH || aa->anim == ANIM_KICK_LEG || aa->anim == ANIM_THRUST_ANIM || aa->anim == ANIM_SWING_ANIM;
+    if (hit && melee && defender == obj_dude && attack->defenderDamage > 0 && arpg_alive(attacker)
+        && arpg_dude_has(false, 0, ASUF_THORNS)) {
+        Attack thorns;
+        memset(&thorns, 0, sizeof(thorns));
+        combat_ctd_init(&thorns, obj_dude, attacker, HIT_MODE_PUNCH, HIT_LOCATION_TORSO);
+        thorns.attackerFlags = DAM_HIT;
+        thorns.defenderDamage = std::max(1, attack->defenderDamage * 30 / 100);
+        bool wasDead = (attacker->data.critter.combat.results & DAM_DEAD) != 0;
+        death_checks(&thorns);
+        arpg_react(&thorns, attacker, thorns.defenderDamage, thorns.defenderFlags, 0);
+        apply_damage(&thorns, false);
+        char text[16];
+        snprintf(text, sizeof(text), "%d", thorns.defenderDamage);
+        arpg_float_text(attacker, text, colorTable[32256]);
+        if (!wasDead && (attacker->data.critter.combat.results & DAM_DEAD) != 0) {
+            arpg_on_kill(attacker, obj_dude);
+        }
     }
 
     if (dudeDowned) {
@@ -2363,6 +2684,9 @@ static void arpg_energy_tick(unsigned int now)
         double perSecond = stat_level(obj_dude, STAT_MAXIMUM_ACTION_POINTS) * energy_regen_pct / 100.0;
         if (arpg_buff(SHRINE_ENERGY)) {
             perSecond *= 5.0;
+        }
+        if (arpg_dude_has(false, 0, ASUF_VIGOR)) {
+            perSecond *= 1.5;
         }
         energy += perSecond * (now - last_energy_tick) / 1000.0;
     }
@@ -2650,14 +2974,14 @@ static void arpg_player_tick(unsigned int now)
         // unless the player clicks again.
         Object* target = player_target;
         if (arpg_start_attack(obj_dude, target, hitMode, hitLocation)) {
-            player_next_attack = now + arpg_attack_delay(obj_dude, hitMode);
+            player_next_attack = now + arpg_attack_delay(obj_dude, hitMode) * 100 / arpg_dude_attack_speed_pct();
         }
         player_target = NULL;
         return;
     }
 
     if (arpg_start_attack(obj_dude, player_target, hitMode)) {
-        player_next_attack = now + arpg_attack_delay(obj_dude, hitMode);
+        player_next_attack = now + arpg_attack_delay(obj_dude, hitMode) * 100 / arpg_dude_attack_speed_pct();
     }
 }
 
@@ -2743,6 +3067,15 @@ static void arpg_drop_loot(Object* victim, int rolls, bool guaranteedGear)
     if (arpg_is_spawned(victim) && (monster == NULL || monster->rank == RANK_NORMAL || monster->rank == RANK_MINION)) {
         pct = pct / 2;
     }
+    // Fortune affixes (D2 gold/magic find).
+    int findPct = arpg_dude_find_pct();
+    pct = pct * findPct / 100;
+    // Champions and uniques drop better gear (D2 treasure class quality).
+    if (monster != NULL && monster->rank == RANK_CHAMPION) {
+        findPct += 50;
+    } else if (monster != NULL && monster->rank == RANK_UNIQUE) {
+        findPct += 150;
+    }
 
     for (int roll = 0; roll < rolls; roll++) {
         if (roll_random(1, 100) <= 55 * pct / 100) {
@@ -2782,10 +3115,43 @@ static void arpg_drop_loot(Object* victim, int rolls, bool guaranteedGear)
                 int pid = eligible[roll_random(0, (int)eligible.size() - 1)];
                 Object* item = arpg_drop_item(victim, pid, 1);
                 if (item != NULL) {
-                    arpg_log("ARPG: %s dropped %s\n", critter_name(victim), item_name(item));
+                    arpg_roll_magic(item, findPct, forced);
+                    arpg_log("ARPG: %s dropped %s (quality %d)\n", critter_name(victim), item_name(item), arpg_item_quality(item));
                 }
             }
         }
+    }
+}
+
+// Armor affixes that work over time: Regenerating heals, Lead-Lined sheds
+// radiation.
+static void arpg_gear_tick(unsigned int now)
+{
+    static unsigned int nextSecond = 0;
+    static int seconds = 0;
+    if (now < nextSecond) {
+        return;
+    }
+    nextSecond = now + 1000;
+    seconds++;
+
+    Object* armor = arpg_dude_armor();
+    if (arpg_item_quality(armor) == 0) {
+        return;
+    }
+
+    switch (arpg_item_prefix(armor)) {
+    case APRE_REGENERATING:
+        if (seconds % 4 == 0 && critter_get_hits(obj_dude) < stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS)) {
+            critter_adjust_hits(obj_dude, 1);
+            intface_update_hit_points(false);
+        }
+        break;
+    case APRE_LEAD_LINED:
+        if (critter_get_rads(obj_dude) > 0) {
+            critter_adjust_rads(obj_dude, -std::min(2, critter_get_rads(obj_dude)));
+        }
+        break;
     }
 }
 
@@ -3346,6 +3712,8 @@ void arpg_tick()
                 arpg_log("ARPG autotest: loading slot 10\n");
                 int rc = arpg_ls_load_slot(9);
                 arpg_log("ARPG autotest: loaded rc=%d, map %d, dude hp=%d\n", rc, map_get_index_number(), critter_get_hits(obj_dude));
+                Object* weapon = arpg_dude_weapon();
+                arpg_log("ARPG autotest: after load wielding %s (quality %d)\n", weapon != NULL ? item_name(weapon) : "-", arpg_item_quality(weapon));
                 return;
             }
         }
@@ -3492,6 +3860,11 @@ void arpg_tick()
             intface_update_items(false);
             intface_update_ac(false);
             intface_update_hit_points(false);
+            if (autotest_magic > 0) {
+                // prefix * 16 + suffix, e.g. 18 = Vicious ... of Haste.
+                weapon->flags |= ((autotest_magic / 16) << ARPG_ITEM_PREFIX_SHIFT) & ARPG_ITEM_PREFIX_MASK;
+                weapon->flags |= ((autotest_magic % 16) << ARPG_ITEM_SUFFIX_SHIFT) & ARPG_ITEM_SUFFIX_MASK;
+            }
             arpg_log("ARPG autotest: armed with %s\n", item_name(weapon));
 
             // Caps on the floor nearby, for the walk-over pickup.
@@ -3638,6 +4011,7 @@ void arpg_tick()
     if (!downed) {
         arpg_caps_tick(now);
         arpg_shrine_tick(now);
+        arpg_gear_tick(now);
         arpg_wasd_tick(now);
         arpg_hold_tick(now);
         arpg_player_tick(now);

@@ -980,23 +980,96 @@ static int arpg_pack_tile(Object* seed)
     return -1;
 }
 
-static Object* arpg_spawn_clone(Object* seed)
+// Monster kin for mixed packs (D2 groups mix related monsters): critter
+// protos of the same kill type whose XP is within half to triple the seed's.
+typedef struct ArpgKin {
+    int pid;
+    int killType;
+    int xp;
+} ArpgKin;
+
+static std::vector<ArpgKin> kin_table;
+
+static void arpg_build_kin_table()
+{
+    kin_table.clear();
+    for (int index = 1; index < 400; index++) {
+        int pid = (OBJ_TYPE_CRITTER << 24) | index;
+        Proto* proto;
+        if (proto_ptr(pid, &proto) == -1 || proto->fid == -1) {
+            continue;
+        }
+        switch (proto->critter.data.killType) {
+        case KILL_TYPE_RADSCORPION:
+        case KILL_TYPE_RAT:
+        case KILL_TYPE_FLOATER:
+        case KILL_TYPE_CENTAUR:
+        case KILL_TYPE_MANTIS:
+        case KILL_TYPE_DEATH_CLAW:
+            break;
+        default:
+            continue;
+        }
+        // The Boneyard's Mother Deathclaw is a one-off.
+        if (proto->critter.data.experience >= 1500) {
+            continue;
+        }
+        kin_table.push_back({ pid, proto->critter.data.killType, proto->critter.data.experience });
+    }
+    arpg_log("ARPG: kin table has %d monster kinds\n", (int)kin_table.size());
+}
+
+static int arpg_pick_kin(Object* seed)
+{
+    if (kin_table.empty()) {
+        arpg_build_kin_table();
+    }
+
+    int killType = critter_kill_count_type(seed);
+    int xp = critter_kill_exps(seed);
+    std::vector<int> choices;
+    for (const ArpgKin& kin : kin_table) {
+        if (kin.killType == killType && kin.pid != seed->pid && kin.xp * 2 >= xp && kin.xp <= xp * 3) {
+            choices.push_back(kin.pid);
+        }
+    }
+    return choices.empty() ? seed->pid : choices[roll_random(0, (int)choices.size() - 1)];
+}
+
+static Object* arpg_spawn_clone(Object* seed, bool allowKin = true)
 {
     int tile = arpg_pack_tile(seed);
     if (tile == -1) {
         return NULL;
     }
 
-    int fid = art_id(OBJ_TYPE_CRITTER, seed->fid & 0xFFF, ANIM_STAND, (seed->fid & 0xF000) >> 12, seed->rotation + 1);
+    // A third of a pack is related kin rather than copies of the seed.
+    int pid = allowKin && roll_random(1, 100) <= 30 ? arpg_pick_kin(seed) : seed->pid;
+
+    int fid;
+    if (pid == seed->pid) {
+        fid = art_id(OBJ_TYPE_CRITTER, seed->fid & 0xFFF, ANIM_STAND, (seed->fid & 0xF000) >> 12, seed->rotation + 1);
+    } else {
+        Proto* proto;
+        if (proto_ptr(pid, &proto) == -1) {
+            return NULL;
+        }
+        fid = proto->fid;
+    }
+
     Object* clone;
-    if (obj_new(&clone, fid, seed->pid) == -1) {
+    if (obj_new(&clone, fid, pid) == -1) {
         return NULL;
     }
 
     // Never saved: packs are rolled again when the map is entered again.
     clone->flags |= OBJECT_NO_SAVE | ARPG_OBJECT_SPAWNED;
+    // Same side as the seed so the pack fights together; kin keep their own
+    // AI packet.
     clone->data.critter.combat.team = seed->data.critter.combat.team;
-    clone->data.critter.combat.aiPacket = seed->data.critter.combat.aiPacket;
+    if (pid == seed->pid) {
+        clone->data.critter.combat.aiPacket = seed->data.critter.combat.aiPacket;
+    }
 
     Rect rect;
     obj_set_rotation(clone, roll_random(0, ROTATION_COUNT - 1), NULL);
@@ -1062,11 +1135,20 @@ static void arpg_populate_level()
         seeds.push_back(critter);
     }
 
+    // A fresh character meets thinner packs and fewer champions (D2 area
+    // levels): 50% at level 1, 75% at 2, full from level 3.
+    int level = stat_pc_get(PC_STAT_LEVEL);
+    int levelPct = std::max(50, std::min(100, (level + 1) * 25));
+    int uniqueChance = unique_pct * levelPct / 100;
+    int championChance = champion_pct * levelPct / 100;
+    // Never more than about three extra monsters per original.
+    int budget = std::min(max_spawns, (int)seeds.size() * 3);
+
     int spawned = 0;
     int champions = 0;
     int uniques = 0;
     for (Object* seed : seeds) {
-        if (spawned >= max_spawns) {
+        if (spawned >= budget) {
             break;
         }
 
@@ -1083,18 +1165,23 @@ static void arpg_populate_level()
         } else {
             extra = roll_random(pack_min, std::max(pack_min, pack_max));
         }
-        extra = extra * pack_density_pct / 100;
+        // Scale, rounding randomly (3 x 50% is 1 or 2, not always 1).
+        int scaled = extra * pack_density_pct * levelPct;
+        extra = scaled / 10000;
+        if (roll_random(0, 9999) < scaled % 10000) {
+            extra++;
+        }
 
         int roll = roll_random(1, 100);
-        if (roll <= unique_pct) {
-            Object* boss = arpg_spawn_clone(seed);
+        if (roll <= uniqueChance) {
+            Object* boss = arpg_spawn_clone(seed, false);
             if (boss != NULL) {
                 spawned++;
                 uniques++;
                 arpg_make_monster(boss, RANK_UNIQUE, arpg_roll_affixes(xp >= 300 ? 3 : 2), pack, NULL);
                 monsters[seed].leader = boss;
                 int minions = std::max(2, extra);
-                for (int index = 0; index < minions && spawned < max_spawns; index++) {
+                for (int index = 0; index < minions && spawned < budget; index++) {
                     Object* minion = arpg_spawn_clone(seed);
                     if (minion != NULL) {
                         spawned++;
@@ -1109,11 +1196,11 @@ static void arpg_populate_level()
                 arpg_log("ARPG: unique %s (%s) [%s] with %d minions\n", name, critter_name(boss), mods, minions);
                 (void)info;
             }
-        } else if (roll <= unique_pct + champion_pct) {
+        } else if (roll <= uniqueChance + championChance) {
             unsigned int kind = champion_kinds[roll_random(0, (int)(sizeof(champion_kinds) / sizeof(*champion_kinds)) - 1)];
             int count = roll_random(2, 3);
-            for (int index = 0; index < count && spawned < max_spawns; index++) {
-                Object* champion = arpg_spawn_clone(seed);
+            for (int index = 0; index < count && spawned < budget; index++) {
+                Object* champion = arpg_spawn_clone(seed, false);
                 if (champion != NULL) {
                     spawned++;
                     champions++;
@@ -1121,7 +1208,7 @@ static void arpg_populate_level()
                 }
             }
         } else {
-            for (int index = 0; index < extra && spawned < max_spawns; index++) {
+            for (int index = 0; index < extra && spawned < budget; index++) {
                 Object* clone = arpg_spawn_clone(seed);
                 if (clone != NULL) {
                     spawned++;
@@ -2619,6 +2706,21 @@ void arpg_tick()
                     Proto* proto;
                     if (proto_ptr(pid, &proto) != -1) {
                         arpg_log("ITEM %d type=%d cost=%d name=%s\n", pid, proto->item.type, proto->item.cost, proto_name(pid));
+                    }
+                }
+                for (int index = 1; index < 400; index++) {
+                    int pid = (OBJ_TYPE_CRITTER << 24) | index;
+                    Proto* proto;
+                    if (proto_ptr(pid, &proto) != -1) {
+                        arpg_log("CRITTER %d kill=%d xp=%d hp=%d team=%d ai=%d art=%d name=%s\n",
+                            index,
+                            proto->critter.data.killType,
+                            proto->critter.data.experience,
+                            proto->critter.data.baseStats[STAT_MAXIMUM_HIT_POINTS],
+                            proto->critter.team,
+                            proto->critter.aiPacket,
+                            proto->fid & 0xFFF,
+                            proto_name(pid));
                     }
                 }
             }

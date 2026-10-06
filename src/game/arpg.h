@@ -96,6 +96,8 @@ bool arpg_is_spawned(Object* obj);
 int arpg_item_quality(Object* item);
 // item_name() hook: the affixed (or unique) name of an item, else NULL.
 char* arpg_item_name(Object* item);
+// item_inv_fid() hook: a unique item's own inventory art, or -1.
+int arpg_item_inv_fid(Object* item);
 // Examine text: writes line `index` of what the affixes do; false past the
 // last line.
 bool arpg_item_affix_text(Object* item, int index, char* out, int size);

@@ -693,6 +693,37 @@ int art_read_lst(const char* path, char** artListPtr, int* artListSizePtr)
     return 0;
 }
 
+// ARPG: appends `name` to the art list of `objectType` (or finds it) and
+// returns its index, -1 on failure. Used for art generated outside the lst
+// files (arpg.cc unique item art).
+int art_add_name(int objectType, const char* name)
+{
+    if (objectType < OBJ_TYPE_ITEM || objectType >= OBJ_TYPE_COUNT || strlen(name) > 12) {
+        return -1;
+    }
+
+    ArtListDescription* list = &(art[objectType]);
+    for (int index = 0; index < list->fileNamesLength; index++) {
+        if (compat_stricmp(list->fileNames + index * 13, name) == 0) {
+            return index;
+        }
+    }
+
+    if (list->fileNamesLength >= 4096) {
+        return -1;
+    }
+
+    char* names = (char*)mem_realloc(list->fileNames, 13 * (list->fileNamesLength + 1));
+    if (names == NULL) {
+        return -1;
+    }
+
+    list->fileNames = names;
+    strncpy(names + 13 * list->fileNamesLength, name, 12);
+    names[13 * list->fileNamesLength + 12] = '\0';
+    return list->fileNamesLength++;
+}
+
 // 0x418F34
 int art_frame_fps(Art* art)
 {

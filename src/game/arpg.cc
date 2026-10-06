@@ -248,6 +248,8 @@ static int player_stagger_pct = 15;
 static int stagger_immunity_ms = 2000;
 static int autotest_xp = 0;
 static std::unordered_map<Object*, unsigned int> stagger_until;
+// Chilled critters (UPOW_CHILL) move and attack at half speed until then.
+static std::unordered_map<Object*, unsigned int> chill_until;
 static int leash_distance = 30;
 static bool show_numbers = true;
 static bool always_run = true;
@@ -799,6 +801,7 @@ static void arpg_reset_level()
 
     actors.clear();
     stagger_until.clear();
+    chill_until.clear();
     combat_ai_over();
     arpg_free_crit_list();
     player_target = NULL;
@@ -869,6 +872,7 @@ void arpg_on_critter_removed(Object* critter)
 
     actors.erase(critter);
     stagger_until.erase(critter);
+    chill_until.erase(critter);
     monsters.erase(critter);
     reinforced.erase(std::remove(reinforced.begin(), reinforced.end(), critter), reinforced.end());
     for (auto& entry : monsters) {
@@ -1013,7 +1017,13 @@ static bool arpg_is_monster_kind(Object* critter)
 static int arpg_monster_speed_pct(Object* critter)
 {
     ArpgMonster* monster = arpg_monster(critter);
-    return monster != NULL ? monster->speedPct : 100;
+    int pct = monster != NULL ? monster->speedPct : 100;
+    // Chilled (D2 cold damage): half speed.
+    auto chill = chill_until.find(critter);
+    if (chill != chill_until.end() && get_time() < chill->second) {
+        pct /= 2;
+    }
+    return pct;
 }
 
 // ---------------------------------------------------------------------------
@@ -1078,15 +1088,31 @@ static int arpg_item_suffix(Object* item)
 }
 
 // Unique items (D2 gold): a fixed base item, our own name and two or three
-// affixes. Stored as prefix field 15 with the unique's number in the suffix
-// field.
+// affixes. The prefix field holds a marker (8..15, never rolled as a magic
+// prefix) and the suffix field the low four bits of the unique's number:
+// number = (15 - marker) * 16 + suffix. Marker 15 is the original encoding
+// (numbers 0..15), so items saved before the widening keep their meaning.
 #define UNIQUE_MARKER 15
+#define UNIQUE_MARKER_MIN 8
+#define UNIQUE_MAX ((UNIQUE_MARKER - UNIQUE_MARKER_MIN + 1) * 16)
+
+// Unique-only powers (D2 unique item mods that magic affixes don't roll).
+enum {
+    UPOW_KNOCKBACK = 0x01, // hits knock the target back
+    UPOW_CRUSHING = 0x02, // 20% chance: +25% of the target's current HP
+    UPOW_CHILL = 0x04, // +3..9 cold damage, slows the target for 3 s
+};
 
 typedef struct ArpgUniqueItem {
     int pid;
     const char* name;
     int prefixes[2];
     int suffixes[2];
+    int powers; // UPOW_*
+    // Art base name (8.3) in art/items and art/inven. These FRMs are made
+    // locally from the player's own Diablo II install by tools/d2art and are
+    // never shipped; without them the base item's art is used.
+    const char* art;
 } ArpgUniqueItem;
 
 static const ArpgUniqueItem unique_items[] = {
@@ -1105,22 +1131,169 @@ static const ArpgUniqueItem unique_items[] = {
     { 2, "Scorpion Shell", { APRE_REINFORCED, 0 }, { ASUF_THORNS, 0 } }, // Metal Armor
     { 1, "Lead Mantle", { APRE_LEAD_LINED, APRE_STURDY }, { ASUF_EVASION, 0 } }, // Leather Armor
     { 17, "Bulwark of the Hub", { APRE_REINFORCED, APRE_REGENERATING }, { ASUF_FORTUNE, 0 } }, // Combat Armor
-    // D2 homage (Windforce: huge damage + attack speed); index 15 is the last one the 4-bit field holds.
-    { 143, "Dust Devil", { WPRE_BRUTAL, WPRE_DEADLY }, { WSUF_HASTE, WSUF_POWER } }, // Sniper Rifle
+    // D2 homages from here on: our own names, D2-style powers, art made from
+    // the D2 item (see `art`). Comments name the D2 unique and base.
+    { 143, "Dust Devil", { WPRE_BRUTAL, WPRE_DEADLY }, { WSUF_HASTE, WSUF_POWER }, UPOW_KNOCKBACK, "d2lwb" }, // Sniper Rifle (Windforce, Hydra Bow)
+    // 16+: second marker (prefix field 14) onwards.
+    { 115, "The Granddaddy", { WPRE_BRUTAL, WPRE_VICIOUS }, { WSUF_POWER, 0 }, 0, "d2gsdu" }, // Super Sledge (The Grandfather, Colossus Blade)
+    { 116, "Neon Saber", { WPRE_SHOCKING, WPRE_VAMPIRIC }, { WSUF_HASTE, 0 }, 0, "d2crsu" }, // Ripper (Lightsabre, Phase Blade)
+    { 160, "Stormwhip", { WPRE_SHOCKING, 0 }, { WSUF_SPEED, 0 }, UPOW_CRUSHING, "d2fla" }, // Cattle Prod (Stormlash, Scourge)
+    { 6, "Doomsayer", { WPRE_BRUTAL, WPRE_VAMPIRIC }, { WSUF_LEECH, 0 }, 0, "d2bswu" }, // Sledgehammer (Doombringer, Champion Sword)
+    { 7, "Toll Collector", { WPRE_DEADLY, 0 }, { WSUF_LEECH, 0 }, UPOW_CHILL, "d2scyu" }, // Spear (The Reaper's Toll, Thresher)
+    { 115, "Hellraiser", { WPRE_BURNING, WPRE_BRUTAL }, { WSUF_POWER, 0 }, 0, "d2btxu" }, // Super Sledge (Hellslayer, Decapitator)
+    { 6, "Skullbuster", { WPRE_BRUTAL, 0 }, { WSUF_SLAYING, 0 }, UPOW_CRUSHING | UPOW_KNOCKBACK, "d2gma" }, // Sledgehammer (The Cranium Basher, Thunder Maul)
+    { 236, "Nuka Frost", { WPRE_VICIOUS, 0 }, { WSUF_SPEED, 0 }, UPOW_CHILL, "d2lsdu" }, // Combat Knife (Frostwind, Cryptic Sword)
+    { 7, "Rad Needle", { WPRE_DEADLY, WPRE_BRUTAL }, { WSUF_HASTE, 0 }, 0, "d2spr" }, // Spear (Arioc's Needle, Hyperion Spear)
+    { 10, "Eagle Eye", { WPRE_DEADLY, WPRE_VICIOUS }, { WSUF_SLAYING, 0 }, 0, "d2lbb" }, // Hunting Rifle (Eaglehorn, Crusader Bow)
+    { 118, "Frostbite Kyanon", { WPRE_BRUTAL, 0 }, { WSUF_SPEED, 0 }, UPOW_CHILL, "d2hxbu" }, // Laser Rifle (Buriza-Do Kyanon, Balista)
+    { 9, "Demon Repeater", { WPRE_BURNING, 0 }, { WSUF_HASTE, 0 }, 0, "d2rxbu" }, // 10mm SMG (Demon Machine, Chu-Ko-Nu)
+    { 5, "Starfall", { WPRE_BURNING, WPRE_SHOCKING }, { WSUF_SPEED, 0 }, UPOW_CHILL, "d2mstu" }, // Club (Baranar's Star, Devil Star)
+    { 20, "Reaver's Bite", { WPRE_BURNING, WPRE_BRUTAL }, { WSUF_FORTUNE, 0 }, 0, "d2gaxu" }, // Crowbar (Messerschmidt's Reaver, Champion Axe)
+    { 4, "Brainstorm Shiv", { WPRE_VICIOUS, 0 }, { WSUF_SPEED, 0 }, UPOW_CHILL, "d2dgr" }, // Knife (Wizardspike, Bone Knife)
 };
 
 #define UNIQUE_ITEM_COUNT ((int)(sizeof(unique_items) / sizeof(*unique_items)))
+static_assert(UNIQUE_ITEM_COUNT <= UNIQUE_MAX, "unique number doesn't fit the affix fields");
+
+static bool arpg_item_has_unique_marker(Object* item)
+{
+    return arpg_item_prefix(item) >= UNIQUE_MARKER_MIN;
+}
+
+// The unique's number stored on `item` (0 when not marked unique).
+static int arpg_unique_index(Object* item)
+{
+    if (!arpg_item_has_unique_marker(item)) {
+        return 0;
+    }
+    return (UNIQUE_MARKER - arpg_item_prefix(item)) * 16 + arpg_item_suffix(item);
+}
+
+static void arpg_set_unique(Object* item, int index)
+{
+    item->flags &= ~ARPG_ITEM_AFFIX_MASK;
+    item->flags |= ((UNIQUE_MARKER - index / 16) << ARPG_ITEM_PREFIX_SHIFT) & ARPG_ITEM_PREFIX_MASK;
+    item->flags |= ((index % 16) << ARPG_ITEM_SUFFIX_SHIFT) & ARPG_ITEM_SUFFIX_MASK;
+}
 
 static const ArpgUniqueItem* arpg_unique_item(Object* item)
 {
-    if (arpg_item_prefix(item) != UNIQUE_MARKER) {
-        return NULL;
-    }
-    int index = arpg_item_suffix(item);
+    int index = arpg_unique_index(item);
     if (index <= 0 || index >= UNIQUE_ITEM_COUNT || unique_items[index].pid != (item->pid & 0xFFFFFF)) {
         return NULL;
     }
     return &(unique_items[index]);
+}
+
+static bool arpg_item_has_power(Object* item, int power)
+{
+    const ArpgUniqueItem* unique = arpg_unique_item(item);
+    return unique != NULL && (unique->powers & power) != 0;
+}
+
+// Unique item art: FIDs of the generated FRMs, registered once (after
+// art_init) by appending their names to the item and inventory art lists.
+// -1 when the files aren't there (no D2 install / converter not run).
+static int unique_ground_fid[UNIQUE_ITEM_COUNT];
+static int unique_inv_fid[UNIQUE_ITEM_COUNT];
+
+static void arpg_unique_art_init()
+{
+    static bool done = false;
+    if (done) {
+        return;
+    }
+    done = true;
+
+    int found = 0;
+    for (int index = 0; index < UNIQUE_ITEM_COUNT; index++) {
+        unique_ground_fid[index] = -1;
+        unique_inv_fid[index] = -1;
+        const char* art = unique_items[index].art;
+        if (art == NULL || art[0] == '\0') {
+            continue;
+        }
+
+        char name[16];
+        snprintf(name, sizeof(name), "%s.frm", art);
+        int groundIndex = art_add_name(OBJ_TYPE_ITEM, name);
+        int invIndex = art_add_name(OBJ_TYPE_INVENTORY, name);
+        if (groundIndex == -1 || invIndex == -1) {
+            continue;
+        }
+
+        int groundFid = art_id(OBJ_TYPE_ITEM, groundIndex, 0, 0, 0);
+        int invFid = art_id(OBJ_TYPE_INVENTORY, invIndex, 0, 0, 0);
+        if (art_exists(groundFid) && art_exists(invFid)) {
+            unique_ground_fid[index] = groundFid;
+            unique_inv_fid[index] = invFid;
+            found++;
+        }
+    }
+    arpg_log("ARPG: unique item art: %d of %d found\n", found, UNIQUE_ITEM_COUNT - 1);
+}
+
+// item_inv_fid() hook: a unique's own inventory art, or -1.
+int arpg_item_inv_fid(Object* item)
+{
+    if (!arpg_on || item == NULL || PID_TYPE(item->pid) != OBJ_TYPE_ITEM || !arpg_item_has_unique_marker(item)) {
+        return -1;
+    }
+    if (arpg_unique_item(item) == NULL) {
+        return -1;
+    }
+    arpg_unique_art_init();
+    return unique_inv_fid[arpg_unique_index(item)];
+}
+
+// Ground art of a unique: its own when available, else the base item's (also
+// repairs FIDs saved by a session whose art list was different).
+static void arpg_unique_fix_fid(Object* item)
+{
+    if (item == NULL || PID_TYPE(item->pid) != OBJ_TYPE_ITEM || !arpg_item_has_unique_marker(item)) {
+        return;
+    }
+    if (arpg_unique_item(item) == NULL) {
+        return;
+    }
+    arpg_unique_art_init();
+    int fid = unique_ground_fid[arpg_unique_index(item)];
+    if (fid == -1) {
+        Proto* proto;
+        if (proto_ptr(item->pid, &proto) == -1) {
+            return;
+        }
+        fid = proto->fid;
+    }
+    if (item->fid != fid) {
+        Rect rect;
+        obj_change_fid(item, fid, &rect);
+        if (item->owner == NULL && item->tile != -1) {
+            tile_refresh_rect(&rect, item->elevation);
+        }
+    }
+}
+
+// Runs over ground items on the current level and the player's inventory.
+static void arpg_unique_fix_all()
+{
+    Object** items = NULL;
+    int count = obj_create_list(-1, map_elevation, OBJ_TYPE_ITEM, &items);
+    for (int index = 0; index < count; index++) {
+        arpg_unique_fix_fid(items[index]);
+        if (arpg_test && arpg_unique_item(items[index]) != NULL) {
+            arpg_log("ARPG: level unique #%d %s fid 0x%x\n", arpg_unique_index(items[index]), item_name(items[index]), items[index]->fid);
+        }
+    }
+    if (count > 0) {
+        obj_delete_list(items);
+    }
+    if (obj_dude != NULL) {
+        Inventory* inventory = &(obj_dude->data.inventory);
+        for (int index = 0; index < inventory->length; index++) {
+            arpg_unique_fix_fid(inventory->items[index].item);
+        }
+    }
 }
 
 // 0 normal, 1 magic, 2 rare, 3 unique.
@@ -1133,7 +1306,7 @@ int arpg_item_quality(Object* item)
     if (type != ITEM_TYPE_WEAPON && type != ITEM_TYPE_ARMOR) {
         return 0;
     }
-    if (arpg_item_prefix(item) == UNIQUE_MARKER) {
+    if (arpg_item_has_unique_marker(item)) {
         return arpg_unique_item(item) != NULL ? 3 : 0;
     }
     return (arpg_item_prefix(item) != 0 ? 1 : 0) + (arpg_item_suffix(item) != 0 ? 1 : 0);
@@ -1244,6 +1417,15 @@ bool arpg_item_affix_text(Object* item, int index, char* out, int size)
             if (suffix > 0 && suffix < suffixCount) {
                 lines.push_back(std::string(suffixText[suffix]) + ".");
             }
+        }
+        if ((unique->powers & UPOW_KNOCKBACK) != 0) {
+            lines.push_back("knocks enemies back.");
+        }
+        if ((unique->powers & UPOW_CRUSHING) != 0) {
+            lines.push_back("20% chance of crushing blow.");
+        }
+        if ((unique->powers & UPOW_CHILL) != 0) {
+            lines.push_back("+3-9 cold damage, chills.");
         }
     } else {
         int prefix = arpg_item_prefix(item);
@@ -2243,6 +2425,28 @@ static void arpg_scale_damage(Attack* attack)
             if (arpg_item_has_suffix(weapon, WSUF_POWER)) {
                 value *= 1.15;
             }
+            // D2 crushing blow: a quarter of the target's current life (an
+            // eighth for champions and uniques).
+            if (arpg_item_has_power(weapon, UPOW_CRUSHING) && roll_random(1, 100) <= 20) {
+                ArpgMonster* target = arpg_monster(victim);
+                int divisor = target != NULL && target->rank >= RANK_CHAMPION ? 8 : 4;
+                value += critter_get_hits(victim) / divisor;
+                arpg_float_text(victim, "crush", colorTable[32392]);
+                if (arpg_test) {
+                    arpg_log("ARPG: crushing blow on %s (hp %d)\n", critter_name(victim), critter_get_hits(victim));
+                }
+            }
+            if (arpg_item_has_power(weapon, UPOW_CHILL)) {
+                value += roll_random(3, 9);
+                unsigned int& until = chill_until[victim];
+                if (get_time() >= until) {
+                    arpg_float_text(victim, "chill", colorTable[12959]);
+                    if (arpg_test) {
+                        arpg_log("ARPG: chilled %s\n", critter_name(victim));
+                    }
+                }
+                until = get_time() + 3000;
+            }
         }
         if (victim == obj_dude) {
             Object* armor = arpg_dude_armor();
@@ -2998,6 +3202,16 @@ static void arpg_resolve(ArpgAttack* aa)
         prof_resolve_ms[0] += arpg_now_ms() - profStart;
     }
 
+    // D2 knockback (UPOW_KNOCKBACK uniques): two hexes, unless the target is
+    // too big to move (Fallout's own rule for multi-hex critters).
+    if (hit && attacker == obj_dude && arpg_item_has_power(attack->weapon, UPOW_KNOCKBACK)
+        && FID_TYPE(defender->fid) == OBJ_TYPE_CRITTER && (defender->flags & OBJECT_MULTIHEX) == 0) {
+        attack->defenderKnockback = std::max(attack->defenderKnockback, 2);
+        if (arpg_test) {
+            arpg_log("ARPG: knockback on %s from tile %d\n", critter_name(defender), defender->tile);
+        }
+    }
+
     double profReact = arpg_now_ms();
     if (hit) {
         arpg_react(attack, defender, attack->defenderDamage, attack->defenderFlags, attack->defenderKnockback);
@@ -3643,9 +3857,8 @@ static void arpg_drop_loot(Object* victim, int rolls, bool guaranteedGear)
                 if (index != 0) {
                     Object* item = arpg_drop_item(victim, unique_items[index].pid, 1);
                     if (item != NULL) {
-                        item->flags &= ~ARPG_ITEM_AFFIX_MASK;
-                        item->flags |= (UNIQUE_MARKER << ARPG_ITEM_PREFIX_SHIFT) & ARPG_ITEM_PREFIX_MASK;
-                        item->flags |= (index << ARPG_ITEM_SUFFIX_SHIFT) & ARPG_ITEM_SUFFIX_MASK;
+                        arpg_set_unique(item, index);
+                        arpg_unique_fix_fid(item);
                         arpg_log("ARPG: %s dropped unique %s\n", critter_name(victim), item_name(item));
                         continue;
                     }
@@ -4000,6 +4213,7 @@ void arpg_tick()
         // placing or removing critters on the first frames).
         populate_pending = true;
         populate_time = now + 500;
+        arpg_unique_fix_all();
     }
 
     if (now >= next_list_refresh) {
@@ -4306,14 +4520,25 @@ void arpg_tick()
         static bool lootDone = false;
         if (autotest_loot && !lootDone && now - autotest_start > 1500) {
             lootDone = true;
-            // { pid, prefix, suffix }: normal, magic, rare, unique (Old Faithful), stimpak, caps.
+            // { pid, prefix, suffix }: normal, magic, rare, unique (Dust Devil, old
+            // encoding), stimpak, caps; then every unique numbered 16 and up.
             static const int drops[][3] = { { 8, 0, 0 }, { 8, 1, 0 }, { 94, 2, 3 }, { 143, UNIQUE_MARKER, 15 }, { PROTO_ID_STIMPACK, 0, 0 }, { PROTO_ID_MONEY, 0, 0 } };
             for (const auto& drop : drops) {
                 Object* item = arpg_drop_item(obj_dude, drop[0], drop[0] == PROTO_ID_MONEY ? 77 : 1);
                 if (item != NULL) {
                     item->flags |= (drop[1] << ARPG_ITEM_PREFIX_SHIFT) & ARPG_ITEM_PREFIX_MASK;
                     item->flags |= (drop[2] << ARPG_ITEM_SUFFIX_SHIFT) & ARPG_ITEM_SUFFIX_MASK;
-                    arpg_log("LOOT test: %s at %d quality %d\n", item_name(item), item->tile, arpg_item_quality(item));
+                    arpg_unique_fix_fid(item);
+                    arpg_log("LOOT test: %s at %d quality %d fid 0x%x\n", item_name(item), item->tile, arpg_item_quality(item), item->fid);
+                }
+            }
+            for (int index = 16; index < UNIQUE_ITEM_COUNT; index++) {
+                Object* item = arpg_drop_item(obj_dude, unique_items[index].pid, 1);
+                if (item != NULL) {
+                    arpg_set_unique(item, index);
+                    arpg_unique_fix_fid(item);
+                    arpg_log("LOOT test: %s at %d quality %d fid 0x%x inv 0x%x flags 0x%x\n", item_name(item), item->tile,
+                        arpg_item_quality(item), item->fid, item_inv_fid(item), item->flags);
                 }
             }
         }

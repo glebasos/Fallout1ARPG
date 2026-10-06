@@ -840,6 +840,12 @@ bool item_grey(Object* weapon)
 // 0x46A838
 int item_inv_fid(Object* item)
 {
+    // ARPG: unique items can have their own inventory art.
+    int arpgFid = arpg_item_inv_fid(item);
+    if (arpgFid != -1) {
+        return arpgFid;
+    }
+
     Proto* proto;
 
     proto_ptr(item->pid, &proto);

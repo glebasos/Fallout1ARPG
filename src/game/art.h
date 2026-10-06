@@ -143,6 +143,7 @@ int art_frame_offset(Art* art, int rotation, int* out_offset_x, int* out_offset_
 unsigned char* art_frame_data(Art* art, int frame, int direction);
 ArtFrame* frame_ptr(Art* art, int frame, int direction);
 bool art_exists(int fid);
+int art_add_name(int objectType, const char* name);
 bool art_fid_valid(int fid);
 int art_alias_num(int a1);
 int art_alias_fid(int fid);

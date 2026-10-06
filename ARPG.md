@@ -79,7 +79,13 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
   4 s), Lead-Lined (sheds radiation), of Thorns (melee attackers take 30% back), of Vigor (+50% energy regen),
   of Evasion (10% of hits miss), of Fortune. Champions and uniques drop better items; a unique's guaranteed
   piece of gear is always at least magic. Magic items sell for 1.5x, rare for 2.5x, and never stack with
-  plain copies. The affixes are saved with the item.
+  plain copies. The affixes are saved with the item. Grenades and other thrown weapons stay plain.
+- **Unique items** (gold): named pieces with fixed affixes, mostly from unique monsters: Wastelander's Friend
+  (10mm Pistol), Junktown Justice (Shotgun), The Ripper's Kiss (Ripper), Overseer's Mercy (Hunting Rifle), Hub
+  Peacemaker (14mm Pistol), Old Faithful (Assault Rifle), Sunburst (Laser Pistol), Brotherhood's Wrath (Power
+  Fist), Glow Torch (Flamer), Deathclaw Bane (Combat Shotgun), Vault Jacket of Ages (Leather Jacket), Scorpion
+  Shell (Metal Armor), Lead Mantle (Leather Armor), Bulwark of the Hub (Combat Armor). Examine an item to see
+  what its affixes do. Uniques sell for 4x.
 - **Caps** are picked up just by walking past them.
 - **Death** works like Diablo II: a killing blow from a monster drops you for three seconds, then you rise again at
   the map entrance with full life, losing 10% of the caps you carry. Monsters forget you while you're down.

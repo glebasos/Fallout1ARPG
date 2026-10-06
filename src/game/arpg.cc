@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -996,7 +997,51 @@ static int arpg_item_suffix(Object* item)
     return item != NULL ? (item->flags & ARPG_ITEM_SUFFIX_MASK) >> ARPG_ITEM_SUFFIX_SHIFT : 0;
 }
 
-// 0 normal, 1 magic, 2 rare.
+// Unique items (D2 gold): a fixed base item, our own name and two or three
+// affixes. Stored as prefix field 15 with the unique's number in the suffix
+// field.
+#define UNIQUE_MARKER 15
+
+typedef struct ArpgUniqueItem {
+    int pid;
+    const char* name;
+    int prefixes[2];
+    int suffixes[2];
+} ArpgUniqueItem;
+
+static const ArpgUniqueItem unique_items[] = {
+    { 0, "", { 0, 0 }, { 0, 0 } }, // 0 is "none"
+    { 8, "Wastelander's Friend", { WPRE_VICIOUS, 0 }, { WSUF_SPEED, 0 } }, // 10mm Pistol
+    { 94, "Junktown Justice", { WPRE_BRUTAL, 0 }, { WSUF_POWER, 0 } }, // Shotgun
+    { 116, "The Ripper's Kiss", { WPRE_VAMPIRIC, 0 }, { WSUF_LEECH, WSUF_SPEED } }, // Ripper
+    { 10, "Overseer's Mercy", { WPRE_DEADLY, 0 }, { WSUF_SLAYING, 0 } }, // Hunting Rifle
+    { 22, "Hub Peacemaker", { WPRE_BRUTAL, 0 }, { WSUF_HASTE, 0 } }, // 14mm Pistol
+    { 23, "Old Faithful", { WPRE_VICIOUS, 0 }, { WSUF_HASTE, WSUF_FORTUNE } }, // Assault Rifle
+    { 16, "Sunburst", { WPRE_BURNING, WPRE_VICIOUS }, { WSUF_SPEED, 0 } }, // Laser Pistol
+    { 235, "Brotherhood's Wrath", { WPRE_SHOCKING, WPRE_BRUTAL }, { WSUF_HASTE, 0 } }, // Power Fist
+    { 11, "Glow Torch", { WPRE_BURNING, 0 }, { WSUF_POWER, WSUF_SLAYING } }, // Flamer
+    { 242, "Deathclaw Bane", { WPRE_DEADLY, WPRE_VICIOUS }, { WSUF_SLAYING, 0 } }, // Combat Shotgun
+    { 74, "Vault Jacket of Ages", { APRE_REGENERATING, 0 }, { ASUF_VIGOR, ASUF_FORTUNE } }, // Leather Jacket
+    { 2, "Scorpion Shell", { APRE_REINFORCED, 0 }, { ASUF_THORNS, 0 } }, // Metal Armor
+    { 1, "Lead Mantle", { APRE_LEAD_LINED, APRE_STURDY }, { ASUF_EVASION, 0 } }, // Leather Armor
+    { 17, "Bulwark of the Hub", { APRE_REINFORCED, APRE_REGENERATING }, { ASUF_FORTUNE, 0 } }, // Combat Armor
+};
+
+#define UNIQUE_ITEM_COUNT ((int)(sizeof(unique_items) / sizeof(*unique_items)))
+
+static const ArpgUniqueItem* arpg_unique_item(Object* item)
+{
+    if (arpg_item_prefix(item) != UNIQUE_MARKER) {
+        return NULL;
+    }
+    int index = arpg_item_suffix(item);
+    if (index <= 0 || index >= UNIQUE_ITEM_COUNT || unique_items[index].pid != (item->pid & 0xFFFFFF)) {
+        return NULL;
+    }
+    return &(unique_items[index]);
+}
+
+// 0 normal, 1 magic, 2 rare, 3 unique.
 int arpg_item_quality(Object* item)
 {
     if (item == NULL || PID_TYPE(item->pid) != OBJ_TYPE_ITEM) {
@@ -1006,14 +1051,54 @@ int arpg_item_quality(Object* item)
     if (type != ITEM_TYPE_WEAPON && type != ITEM_TYPE_ARMOR) {
         return 0;
     }
+    if (arpg_item_prefix(item) == UNIQUE_MARKER) {
+        return arpg_unique_item(item) != NULL ? 3 : 0;
+    }
     return (arpg_item_prefix(item) != 0 ? 1 : 0) + (arpg_item_suffix(item) != 0 ? 1 : 0);
 }
 
-// item_name() hook: "Vicious 10mm Pistol of Speed", or NULL for plain items.
+// Whether an item carries an affix (uniques can carry two of a kind).
+static bool arpg_item_has_prefix(Object* item, int prefix)
+{
+    if (item == NULL || prefix == 0) {
+        return false;
+    }
+    const ArpgUniqueItem* unique = arpg_unique_item(item);
+    if (unique != NULL) {
+        return unique->prefixes[0] == prefix || unique->prefixes[1] == prefix;
+    }
+    return arpg_item_prefix(item) == prefix && arpg_item_quality(item) > 0;
+}
+
+static bool arpg_item_has_suffix(Object* item, int suffix)
+{
+    if (item == NULL || suffix == 0) {
+        return false;
+    }
+    const ArpgUniqueItem* unique = arpg_unique_item(item);
+    if (unique != NULL) {
+        return unique->suffixes[0] == suffix || unique->suffixes[1] == suffix;
+    }
+    return arpg_item_suffix(item) == suffix && arpg_item_quality(item) > 0;
+}
+
+// item_name() hook: "Vicious 10mm Pistol of Speed", a unique's own name, or
+// NULL for plain items.
 char* arpg_item_name(Object* item)
 {
     if (!arpg_on || arpg_item_quality(item) == 0) {
         return NULL;
+    }
+
+    static char buffers[4][96];
+    static int next = 0;
+    char* buffer = buffers[next];
+    next = (next + 1) % 4;
+
+    const ArpgUniqueItem* unique = arpg_unique_item(item);
+    if (unique != NULL) {
+        snprintf(buffer, 96, "%s", unique->name);
+        return buffer;
     }
 
     bool weapon = item_get_type(item) == ITEM_TYPE_WEAPON;
@@ -1029,10 +1114,6 @@ char* arpg_item_name(Object* item)
         suffixName = suffix < ASUF_COUNT ? armor_suffix_names[suffix] : "";
     }
 
-    static char buffers[4][96];
-    static int next = 0;
-    char* buffer = buffers[next];
-    next = (next + 1) % 4;
     snprintf(buffer, 96, "%s%s%s%s%s",
         prefixName,
         prefixName[0] != '\0' ? " " : "",
@@ -1042,12 +1123,12 @@ char* arpg_item_name(Object* item)
     return buffer;
 }
 
-// What a magic item's affixes do, one line each, for examining it (D2 item
-// tooltips). Returns the number of lines written (0-2).
-int arpg_item_affix_text(Object* item, char* line1, char* line2, int size)
+// What a magic, rare or unique item's affixes do, for examining it (D2 item
+// tooltips). Writes line `index` and returns true while there are lines.
+bool arpg_item_affix_text(Object* item, int index, char* out, int size)
 {
     if (!arpg_on || arpg_item_quality(item) == 0) {
-        return 0;
+        return false;
     }
 
     static const char* weaponPrefixText[WPRE_COUNT] = { "", "+25% damage", "+50% damage", "+2-6 fire damage",
@@ -1060,19 +1141,55 @@ int arpg_item_affix_text(Object* item, char* line1, char* line2, int size)
         "+50% energy regeneration", "10% of hits miss", "more and better loot" };
 
     bool weapon = item_get_type(item) == ITEM_TYPE_WEAPON;
-    int prefix = arpg_item_prefix(item);
-    int suffix = arpg_item_suffix(item);
-    char* lines[2] = { line1, line2 };
-    int count = 0;
-    if (prefix != 0 && prefix < (weapon ? WPRE_COUNT : APRE_COUNT)) {
-        snprintf(lines[count++], size, "%s: %s.", weapon ? weapon_prefix_names[prefix] : armor_prefix_names[prefix],
-            weapon ? weaponPrefixText[prefix] : armorPrefixText[prefix]);
+    const char* const* prefixText = weapon ? weaponPrefixText : armorPrefixText;
+    const char* const* suffixText = weapon ? weaponSuffixText : armorSuffixText;
+    int prefixCount = weapon ? WPRE_COUNT : APRE_COUNT;
+    int suffixCount = weapon ? WSUF_COUNT : ASUF_COUNT;
+
+    // The lines, in order: a unique's banner, then prefixes, then suffixes.
+    std::vector<std::string> lines;
+    const ArpgUniqueItem* unique = arpg_unique_item(item);
+    if (unique != NULL) {
+        lines.push_back(std::string("Unique ") + proto_name(item->pid) + ".");
+        for (int prefix : unique->prefixes) {
+            if (prefix > 0 && prefix < prefixCount) {
+                lines.push_back(std::string(prefixText[prefix]) + ".");
+            }
+        }
+        for (int suffix : unique->suffixes) {
+            if (suffix > 0 && suffix < suffixCount) {
+                lines.push_back(std::string(suffixText[suffix]) + ".");
+            }
+        }
+    } else {
+        int prefix = arpg_item_prefix(item);
+        int suffix = arpg_item_suffix(item);
+        if (prefix > 0 && prefix < prefixCount) {
+            lines.push_back(std::string(weapon ? weapon_prefix_names[prefix] : armor_prefix_names[prefix]) + ": " + prefixText[prefix] + ".");
+        }
+        if (suffix > 0 && suffix < suffixCount) {
+            lines.push_back(std::string(weapon ? weapon_suffix_names[suffix] : armor_suffix_names[suffix]) + ": " + suffixText[suffix] + ".");
+        }
     }
-    if (suffix != 0 && suffix < (weapon ? WSUF_COUNT : ASUF_COUNT)) {
-        snprintf(lines[count++], size, "%s: %s.", weapon ? weapon_suffix_names[suffix] : armor_suffix_names[suffix],
-            weapon ? weaponSuffixText[suffix] : armorSuffixText[suffix]);
+
+    if (index < 0 || index >= (int)lines.size()) {
+        return false;
     }
-    return count;
+    snprintf(out, size, "%s", lines[index].c_str());
+    return true;
+}
+
+// A unique whose base item fits the budget, or 0.
+static int arpg_pick_unique(int budget)
+{
+    std::vector<int> eligible;
+    for (int index = 1; index < UNIQUE_ITEM_COUNT; index++) {
+        Proto* proto;
+        if (proto_ptr(unique_items[index].pid, &proto) != -1 && proto->item.cost <= budget) {
+            eligible.push_back(index);
+        }
+    }
+    return eligible.empty() ? 0 : eligible[roll_random(0, (int)eligible.size() - 1)];
 }
 
 // Rolls magic or rare affixes onto a freshly dropped weapon or armor.
@@ -1084,6 +1201,11 @@ static void arpg_roll_magic(Object* item, int findPct, bool atLeastMagic)
     }
     int type = item_get_type(item);
     if (type != ITEM_TYPE_WEAPON && type != ITEM_TYPE_ARMOR) {
+        return;
+    }
+    // Grenades, molotovs, throwing knives and flares are used up and stack;
+    // they stay plain.
+    if (type == ITEM_TYPE_WEAPON && item_w_subtype(item, HIT_MODE_LEFT_WEAPON_PRIMARY) == ATTACK_TYPE_THROW) {
         return;
     }
 
@@ -1135,21 +1257,20 @@ static bool arpg_dude_has(bool weapon, int prefix, int suffix)
     if (item == NULL) {
         return false;
     }
-    return (prefix != 0 && arpg_item_prefix(item) == prefix) || (suffix != 0 && arpg_item_suffix(item) == suffix);
+    return arpg_item_has_prefix(item, prefix) || arpg_item_has_suffix(item, suffix);
 }
 
 // Weapon speed affixes (D2 increased attack speed), in percent.
 static int arpg_dude_attack_speed_pct()
 {
     Object* weapon = arpg_dude_weapon();
-    switch (arpg_item_suffix(weapon)) {
-    case WSUF_SPEED:
-        return 125;
-    case WSUF_HASTE:
+    if (arpg_item_has_suffix(weapon, WSUF_HASTE)) {
         return 150;
-    default:
-        return 100;
     }
+    if (arpg_item_has_suffix(weapon, WSUF_SPEED)) {
+        return 125;
+    }
+    return 100;
 }
 
 // Magic find from Fortune affixes.
@@ -1896,47 +2017,40 @@ static void arpg_scale_damage(Attack* attack)
         }
 
         // Magic weapon and armor affixes.
-        if (attack->attacker == obj_dude && attack->weapon != NULL && arpg_item_quality(attack->weapon) > 0) {
-            switch (arpg_item_prefix(attack->weapon)) {
-            case WPRE_VICIOUS:
+        Object* weapon = attack->attacker == obj_dude ? attack->weapon : NULL;
+        if (weapon != NULL && arpg_item_quality(weapon) > 0) {
+            if (arpg_item_has_prefix(weapon, WPRE_VICIOUS)) {
                 value *= 1.25;
-                break;
-            case WPRE_BRUTAL:
-                value *= 1.5;
-                break;
-            case WPRE_BURNING:
-                value += roll_random(2, 6);
-                break;
-            case WPRE_SHOCKING:
-                value += roll_random(3, 8);
-                break;
-            case WPRE_DEADLY:
-                if (roll_random(1, 100) <= 15) {
-                    value *= 2.0;
-                }
-                break;
             }
-            switch (arpg_item_suffix(attack->weapon)) {
-            case WSUF_SLAYING: {
+            if (arpg_item_has_prefix(weapon, WPRE_BRUTAL)) {
+                value *= 1.5;
+            }
+            if (arpg_item_has_prefix(weapon, WPRE_BURNING)) {
+                value += roll_random(2, 6);
+            }
+            if (arpg_item_has_prefix(weapon, WPRE_SHOCKING)) {
+                value += roll_random(3, 8);
+            }
+            if (arpg_item_has_prefix(weapon, WPRE_DEADLY) && roll_random(1, 100) <= 15) {
+                value *= 2.0;
+            }
+            if (arpg_item_has_suffix(weapon, WSUF_SLAYING)) {
                 ArpgMonster* target = arpg_monster(victim);
                 if (target != NULL && target->rank >= RANK_CHAMPION) {
                     value *= 1.4;
                 }
-                break;
             }
-            case WSUF_POWER:
+            if (arpg_item_has_suffix(weapon, WSUF_POWER)) {
                 value *= 1.15;
-                break;
             }
         }
         if (victim == obj_dude) {
-            switch (arpg_item_prefix(arpg_dude_armor())) {
-            case APRE_STURDY:
+            Object* armor = arpg_dude_armor();
+            if (arpg_item_has_prefix(armor, APRE_STURDY)) {
                 value *= 0.9;
-                break;
-            case APRE_REINFORCED:
+            }
+            if (arpg_item_has_prefix(armor, APRE_REINFORCED)) {
                 value *= 0.8;
-                break;
             }
         }
         // Shrine boosts.
@@ -2618,9 +2732,9 @@ static void arpg_resolve(ArpgAttack* aa)
 
     // Life stealing weapons (Vampiric, of the Leech).
     if (hit && attacker == obj_dude && attack->defenderDamage > 0 && attack->weapon != NULL) {
-        int pct = (arpg_item_prefix(attack->weapon) == WPRE_VAMPIRIC ? 10 : 0)
-            + (arpg_item_suffix(attack->weapon) == WSUF_LEECH ? 15 : 0);
-        if (pct > 0 && arpg_item_quality(attack->weapon) > 0) {
+        int pct = (arpg_item_has_prefix(attack->weapon, WPRE_VAMPIRIC) ? 10 : 0)
+            + (arpg_item_has_suffix(attack->weapon, WSUF_LEECH) ? 15 : 0);
+        if (pct > 0) {
             int heal = attack->defenderDamage * pct / 100;
             if (heal == 0 && roll_random(1, 100) <= attack->defenderDamage * pct) {
                 heal = 1;
@@ -3194,6 +3308,24 @@ static void arpg_drop_loot(Object* victim, int rolls, bool guaranteedGear)
         bool forced = guaranteedGear && roll == 0;
         if (!loot_table.empty() && (forced || roll_random(1, 100) <= gearChance)) {
             int budget = (300 + xp * 25) * (guaranteedGear ? 2 : 1);
+
+            // Unique items (D2 gold): mostly from unique monsters.
+            int uniquePerMille = monster != NULL && monster->rank == RANK_UNIQUE ? 150
+                : monster != NULL && monster->rank == RANK_CHAMPION ? 40
+                                                                    : 5;
+            if (roll_random(1, 1000) <= uniquePerMille * findPct / 100) {
+                int index = arpg_pick_unique(budget * 2);
+                if (index != 0) {
+                    Object* item = arpg_drop_item(victim, unique_items[index].pid, 1);
+                    if (item != NULL) {
+                        item->flags &= ~ARPG_ITEM_AFFIX_MASK;
+                        item->flags |= (UNIQUE_MARKER << ARPG_ITEM_PREFIX_SHIFT) & ARPG_ITEM_PREFIX_MASK;
+                        item->flags |= (index << ARPG_ITEM_SUFFIX_SHIFT) & ARPG_ITEM_SUFFIX_MASK;
+                        arpg_log("ARPG: %s dropped unique %s\n", critter_name(victim), item_name(item));
+                        continue;
+                    }
+                }
+            }
             std::vector<int> eligible;
             for (int pid : loot_table) {
                 Proto* proto;
@@ -3230,18 +3362,13 @@ static void arpg_gear_tick(unsigned int now)
         return;
     }
 
-    switch (arpg_item_prefix(armor)) {
-    case APRE_REGENERATING:
-        if (seconds % 4 == 0 && critter_get_hits(obj_dude) < stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS)) {
-            critter_adjust_hits(obj_dude, 1);
-            intface_update_hit_points(false);
-        }
-        break;
-    case APRE_LEAD_LINED:
-        if (critter_get_rads(obj_dude) > 0) {
-            critter_adjust_rads(obj_dude, -std::min(2, critter_get_rads(obj_dude)));
-        }
-        break;
+    if (arpg_item_has_prefix(armor, APRE_REGENERATING) && seconds % 4 == 0
+        && critter_get_hits(obj_dude) < stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS)) {
+        critter_adjust_hits(obj_dude, 1);
+        intface_update_hit_points(false);
+    }
+    if (arpg_item_has_prefix(armor, APRE_LEAD_LINED) && critter_get_rads(obj_dude) > 0) {
+        critter_adjust_rads(obj_dude, -std::min(2, critter_get_rads(obj_dude)));
     }
 }
 

@@ -90,12 +90,13 @@ bool arpg_is_spawned(Object* obj);
 #define ARPG_ITEM_SUFFIX_MASK 0x000003C0
 #define ARPG_ITEM_AFFIX_MASK (ARPG_ITEM_PREFIX_MASK | ARPG_ITEM_SUFFIX_MASK)
 
-// Magic items: 0 normal, 1 magic (blue), 2 rare (yellow).
+// Magic items: 0 normal, 1 magic (blue), 2 rare (yellow), 3 unique (gold).
 int arpg_item_quality(Object* item);
-// item_name() hook: the affixed name of a magic or rare item, else NULL.
+// item_name() hook: the affixed (or unique) name of an item, else NULL.
 char* arpg_item_name(Object* item);
-// Examine text: what each affix does, one line each; returns the count.
-int arpg_item_affix_text(Object* item, char* line1, char* line2, int size);
+// Examine text: writes line `index` of what the affixes do; false past the
+// last line.
+bool arpg_item_affix_text(Object* item, int index, char* out, int size);
 
 // Diablo-style monster rank for the HUD: 0 normal, 1 minion, 2 champion,
 // 3 unique. Fills the display name and the modifier list ("Champion",

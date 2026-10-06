@@ -706,10 +706,10 @@ int item_cost(Object* obj)
         break;
     }
 
-    // ARPG: magic items are worth more, rare ones more still.
+    // ARPG: magic items are worth 1.5x, rare 2.5x, unique 4x.
     int quality = arpg_item_quality(obj);
     if (quality > 0) {
-        cost = cost * (quality == 2 ? 5 : 3) / 2;
+        cost = cost * (quality == 3 ? 8 : quality == 2 ? 5 : 3) / 2;
     }
 
     return cost;

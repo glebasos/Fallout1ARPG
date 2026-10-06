@@ -47,6 +47,23 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
 
 - Real-time AI: enemies chase and attack using Fallout's own targeting (`ai_danger_source`), teammates join, scripts still trigger fights.
 - Attack speed = weapon AP cost ÷ max AP (Agility matters). Fallout's to-hit, crits, armour and damage are unchanged.
+
+### Diablo II feel
+- **Run and gun**: attacks play at Diablo speed (your attacks 2x, raising/lowering a gun 3x, enemy attacks 1.5x,
+  hit recovery 1.6x, running 1.2x, projectiles 1.5x). An attack cuts a run short; with WASD the run picks up again
+  as soon as the shot is out, so you can keep moving and shooting.
+- **Monster packs**: every wild monster (rats, radscorpions, mantises, floaters, centaurs, deathclaws) leads a pack
+  of 2-4 more. Packs attack on sight and the whole pack comes when one of them is shot. Packs aren't saved: they
+  come back when you re-enter a map after 12 game hours, or when you load a game.
+- **Champions** (blue name, faint glow): Champion, Fanatic (very fast), Berserker (red, hits hard, takes more),
+  Ghostly (see-through, slow, drains energy), Possessed (lots of life). 3x XP, more loot.
+- **Uniques** (gold name like "Rustfang the Rabid", bright glow) with minions and two or three modifiers:
+  Extra Strong, Extra Fast, Armored, Fire Enchanted (explodes when it dies — step back), Radioactive (hits give
+  rads), Energy Drain, Vampiric, Phasing (teleports to you), Pack Leader (minions hit harder), Venomous.
+  5x XP, four loot picks and always a piece of gear.
+- **HUD**: the monster under the cursor (or your target) is shown at the top with its name, modifiers and life;
+  flask counts sit next to the LIFE globe; a gold XP bar runs along the top of the interface.
+- **Caps** are picked up just by walking past them.
 - Hit recovery like Diablo: only big hits (≥8% max HP for monsters, ≥15% for you), crits and knockdowns stagger, with a 2 s immunity.
 - LIFE and ENERGY globes sit in the hi-res side areas (needs width ≥ 840, e.g. 1024x768 via `f1_res.ini`).
 - Kills drop caps, stimpaks, ammo for your weapon and gear scaled by the monster's XP. XP is awarded on kill.
@@ -54,7 +71,13 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
 ## Config (`[arpg]` in fallout.cfg)
 `enabled`, `controls` (poe/wasd/classic), `dodge_cost` (20), `always_run`, `hold_to_move`, `damage_numbers`, `globes`, `loot_drops`, `loot_pct`,
 `energy_regen_pct`, `enemy_attack_delay_pct` (130), `player_attack_delay_pct` (100), `stagger_pct`,
-`player_stagger_pct`, `stagger_immunity_ms`, `leash_distance`, `labels_always`.
+`player_stagger_pct`, `stagger_immunity_ms`, `leash_distance`, `labels_always`, `auto_caps`.
+
+Animation speeds (percent): `attack_anim_pct` (200), `aim_anim_pct` (300), `enemy_attack_anim_pct` (150),
+`reaction_anim_pct` (160), `run_speed_pct` (120), `enemy_run_speed_pct` (115), `projectile_speed_pct` (150).
+
+Packs: `packs` (1), `pack_min` (2), `pack_max` (4), `pack_density_pct` (100), `champion_pct` (10),
+`unique_pct` (7), `pack_respawn_hours` (12), `max_spawns` per level (60), `aggro_radius` (9).
 
 ## Test harness (developers)
 ```
@@ -62,6 +85,8 @@ fallout-arpg.exe [arpg]autotest=1 [arpg]autoplay=1 [arpg]autotest_seconds=90 [ar
                  [arpg]autotest_map=CAVES.MAP [arpg]autotest_weapon=23 [arpg]autotest_ammo=35
                  [arpg]autotest_armor=17 [arpg]autotest_xp=30000
 ```
+`[arpg]autotest_god=1` keeps the bot above half life, `[arpg]autotest_saveload=N` saves to slot 10 after N
+seconds (with a knocked-out pack monster) and loads it back 3 s later.
 `[arpg]autotest_iframes=1` keeps dodge i-frames on. `[arpg]autotest_wasd=0..3` holds W/D/S/A (3 s on, 1 s off) through the real WASD movement path;
 `[arpg]dump_items=1` logs every item PID. Test keys are reset in fallout.cfg on exit, but other
 overrides like `controls` or `dodge_cost` are saved.
@@ -73,6 +98,13 @@ symbolized stack to `arpg_crash.log` on a crash. F11 warps next to the nearest c
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build
 ```
+
+## Diablo II reference
+Design numbers (champion/unique life, XP and modifier list, pack sizes) come from Diablo II's own data tables
+(`MonUMod.txt`, `MonStats.txt`, ...), read from a local D2 install with a small extractor built on
+[AbyssEngine](https://github.com/AbyssEngine/AbyssEngine)'s MIT-licensed MPQ reader. AbyssEngine (a clean-room
+D2 engine in C) is a reference and a source we may copy code from (keep its MIT notice). No Diablo II data,
+names or assets are included here.
 
 ## Code map
 - `src/game/arpg.cc` – real-time combat, AI tick, energy/specials, loot, hold-to-move, control schemes

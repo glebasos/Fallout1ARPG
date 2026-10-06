@@ -175,6 +175,9 @@ static bool populate_pending = false;
 // timer), and the map index that applies to.
 static bool random_map_pending = false;
 static int random_map_index = -1;
+// Humans that already called in their raider pack.
+static std::vector<Object*> reinforced;
+static bool raider_packs = true;
 static unsigned int populate_time = 0;
 static unsigned int next_aggro_check = 0;
 
@@ -326,6 +329,8 @@ static bool autotest_shrines = false;
 static bool autotest_gallery = false;
 static bool autotest_swarm = false;
 static int autotest_magic = 0;
+static bool autotest_encounter = false;
+static bool autotest_hostile = false;
 
 static unsigned int next_hold_action = 0;
 static int hold_last_tile = -1;
@@ -487,7 +492,7 @@ bool arpg_autotest()
 
 bool arpg_autotest_sweeping()
 {
-    return arpg_test && autotest_sweep > 0;
+    return arpg_test && (autotest_sweep > 0 || autotest_hostile);
 }
 
 bool arpg_is_spawned(Object* obj)
@@ -613,6 +618,7 @@ void arpg_init()
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "projectile_speed_pct", &projectile_speed_pct);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "packs", &packs_enabled);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "shrines", &shrines_enabled);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "raider_packs", &raider_packs);
     // Shrines are drawn with a scenery proto: a Burning Metal Barrel by
     // default (the Altars are huge multi-hex Cathedral pieces).
     int shrineScenery = 1;
@@ -636,6 +642,8 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_gallery", &autotest_gallery);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_swarm", &autotest_swarm);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_magic", &autotest_magic);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_encounter", &autotest_encounter);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_hostile", &autotest_hostile);
     // Autotest: hold a WASD direction (0=W 1=D 2=S 3=A) through the real
     // movement path.
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_wasd", &autotest_wasd);
@@ -653,7 +661,7 @@ void arpg_init()
 
     // Command-line test switches are merged into game_config, which CE saves
     // back to fallout.cfg on exit. Neutralize them so they don't stick.
-    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_swarm", "autotest_magic" };
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile" };
     for (const char* key : testKeys) {
         char* value;
         if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
@@ -752,6 +760,7 @@ void arpg_reset()
     arpg_reset_level();
     monsters.clear();
     shrines.clear();
+    reinforced.clear();
     populated_levels.clear();
     if (death_until != 0) {
         death_until = 0;
@@ -791,6 +800,7 @@ void arpg_on_critter_removed(Object* critter)
     actors.erase(critter);
     stagger_until.erase(critter);
     monsters.erase(critter);
+    reinforced.erase(std::remove(reinforced.begin(), reinforced.end(), critter), reinforced.end());
     for (auto& entry : monsters) {
         if (entry.second.leader == critter) {
             entry.second.leader = NULL;
@@ -1316,6 +1326,8 @@ static void arpg_unique_name(char* dest, size_t size)
         titles[roll_random(0, (int)(sizeof(titles) / sizeof(*titles)) - 1)]);
 }
 
+static void arpg_human_name(char* dest, size_t size);
+
 static void arpg_make_monster(Object* critter, int rank, unsigned int affixes, int pack, Object* leader)
 {
     ArpgMonster& monster = monsters[critter];
@@ -1366,6 +1378,11 @@ static void arpg_make_monster(Object* critter, int rank, unsigned int affixes, i
     if ((affixes & AFFIX_FAST) != 0) {
         monster.speedPct = std::max(monster.speedPct, 150);
     }
+    // People carry guns that already hit hard (a raider boss with a shotgun
+    // and +50% did 30 a shot); their rank bonus is halved.
+    if (!arpg_is_monster_kind(critter)) {
+        monster.dmgPct /= 2;
+    }
 
     // Look the part: uniques glow, champions shimmer, ghosts are see-through
     // and berserkers run red.
@@ -1381,7 +1398,11 @@ static void arpg_make_monster(Object* critter, int rank, unsigned int affixes, i
     }
 
     if (rank == RANK_UNIQUE) {
-        arpg_unique_name(monster.name, sizeof(monster.name));
+        if (arpg_is_monster_kind(critter)) {
+            arpg_unique_name(monster.name, sizeof(monster.name));
+        } else {
+            arpg_human_name(monster.name, sizeof(monster.name));
+        }
     } else {
         snprintf(monster.name, sizeof(monster.name), "%s", critter_name(critter));
     }
@@ -1548,6 +1569,18 @@ static Object* arpg_spawn_clone(Object* seed, bool allowKin = true)
 
     stat_spawned++;
     return clone;
+}
+
+// Our own wasteland boss names for human uniques.
+static void arpg_human_name(char* dest, size_t size)
+{
+    static const char* firsts[] = { "Mad", "Bloody", "Iron", "Rusty", "One-Eyed", "Lucky", "Big", "Crazy", "Dirty", "Slim", "Red", "Gravel" };
+    static const char* names[] = { "Pete", "Sal", "Mae", "Duke", "Carl", "Rosa", "Hank", "Vera", "Jonas", "Lou", "Mags", "Tibbs" };
+    static const char* titles[] = { "the Butcher", "the Skinner", "Two-Guns", "the Raider King", "the Cruel", "the Jackal", "Deadeye", "the Collector", "of the Wastes", "the Scavenger" };
+    snprintf(dest, size, "%s %s %s",
+        firsts[roll_random(0, (int)(sizeof(firsts) / sizeof(*firsts)) - 1)],
+        names[roll_random(0, (int)(sizeof(names) / sizeof(*names)) - 1)],
+        titles[roll_random(0, (int)(sizeof(titles) / sizeof(*titles)) - 1)]);
 }
 
 static unsigned int arpg_roll_affixes(int count)
@@ -1740,6 +1773,99 @@ static void arpg_populate_level()
 
     if (spawned > 0) {
         arpg_refresh_list();
+    }
+}
+
+// Raider packs: on random encounter maps, a human who turns on the player
+// calls in one or two armed copies of itself, sometimes a champion pack or a
+// named boss. Only hostile groups grow; caravans and traders never do.
+static void arpg_call_reinforcements(Object* seed)
+{
+    if (!raider_packs || map_get_index_number() != random_map_index) {
+        return;
+    }
+    if (arpg_is_monster_kind(seed) || arpg_is_spawned(seed) || isPartyMember(seed) || critter_kill_exps(seed) >= 1500) {
+        return;
+    }
+    if (std::find(reinforced.begin(), reinforced.end(), seed) != reinforced.end()) {
+        return;
+    }
+    reinforced.push_back(seed);
+
+    int level = stat_pc_get(PC_STAT_LEVEL);
+    int levelPct = std::max(50, std::min(100, (level + 1) * 25));
+    int count = roll_random(1, 2);
+    if (roll_random(1, 100) > levelPct) {
+        count--;
+    }
+    if (count <= 0) {
+        return;
+    }
+
+    // The seed's weapon, for the copies.
+    Object* weapon = inven_right_hand(seed);
+    if (weapon == NULL || item_get_type(weapon) != ITEM_TYPE_WEAPON) {
+        weapon = inven_left_hand(seed);
+    }
+    if (weapon != NULL && item_get_type(weapon) != ITEM_TYPE_WEAPON) {
+        weapon = NULL;
+    }
+
+    ArpgMonster* existing = arpg_monster(seed);
+    int pack = existing != NULL ? existing->pack : next_pack_id++;
+    if (existing == NULL) {
+        arpg_make_monster(seed, RANK_NORMAL, 0, pack, NULL);
+    }
+
+    int roll = roll_random(1, 100);
+    int rank = RANK_NORMAL;
+    unsigned int kind = 0;
+    if (roll <= unique_pct * levelPct / 100) {
+        rank = RANK_UNIQUE;
+    } else if (roll <= (unique_pct + champion_pct) * levelPct / 100) {
+        rank = RANK_CHAMPION;
+        kind = champion_kinds[roll_random(0, (int)(sizeof(champion_kinds) / sizeof(*champion_kinds)) - 1)];
+    }
+
+    Object* boss = NULL;
+    for (int index = 0; index < count; index++) {
+        Object* clone = arpg_spawn_clone(seed, false);
+        if (clone == NULL) {
+            continue;
+        }
+
+        if (weapon != NULL) {
+            Object* copy;
+            if (obj_pid_new(&copy, weapon->pid) == 0) {
+                if (item_add_force(clone, copy, 1) == 0) {
+                    obj_disconnect(copy, NULL);
+                    if (item_w_max_ammo(copy) > 0) {
+                        item_w_set_curr_ammo(copy, item_w_max_ammo(copy));
+                        int ammoPid = item_w_ammo_pid(copy);
+                        Object* ammo;
+                        if (ammoPid > 0 && obj_pid_new(&ammo, ammoPid) == 0) {
+                            if (item_add_force(clone, ammo, 2) == 0) {
+                                obj_disconnect(ammo, NULL);
+                            }
+                        }
+                    }
+                    inven_wield(clone, copy, 1);
+                }
+            }
+        }
+
+        if (rank == RANK_UNIQUE && boss == NULL) {
+            boss = clone;
+            arpg_make_monster(clone, RANK_UNIQUE, arpg_roll_affixes(2), pack, NULL);
+        } else if (rank == RANK_UNIQUE) {
+            arpg_make_monster(clone, RANK_MINION, 0, pack, boss);
+        } else {
+            arpg_make_monster(clone, rank, kind, pack, NULL);
+        }
+
+        critter_set_who_hit_me(clone, obj_dude);
+        clone->data.critter.combat.maneuver |= CRITTER_MANEUVER_ENGAGING;
+        arpg_log("ARPG: %s calls in %s\n", critter_name(seed), arpg_label(clone));
     }
 }
 
@@ -3592,6 +3718,7 @@ static void arpg_critter_tick(Object* critter, unsigned int now)
 
     if (target == obj_dude || isPartyMember(target)) {
         arpg_alert_pack(critter, target);
+        arpg_call_reinforcements(critter);
     }
 
     int hitMode = arpg_pick_hit_mode(critter, &actor);
@@ -3858,6 +3985,27 @@ void arpg_tick()
                     arpg_log("SWEEP -> map %d %s\n", next, name);
                 }
             }
+        }
+
+        // Raider pack test: treat the test map as a random encounter and turn
+        // its people on the player.
+        if (autotest_encounter && random_map_index != map_get_index_number()) {
+            random_map_index = map_get_index_number();
+        }
+        static bool hostileDone = false;
+        if (autotest_hostile && !hostileDone && now - autotest_start > 6000) {
+            hostileDone = true;
+            int count = 0;
+            for (int index = 0; index < crit_count; index++) {
+                Object* critter = crit_list[index];
+                if (critter != obj_dude && arpg_alive(critter) && !isPartyMember(critter) && !arpg_is_monster_kind(critter)) {
+                    critter_set_who_hit_me(critter, obj_dude);
+                    critter->data.critter.combat.maneuver |= CRITTER_MANEUVER_ENGAGING;
+                    count++;
+                }
+            }
+            alert_until = now + 10000;
+            arpg_log("ARPG autotest: %d people turn hostile\n", count);
         }
 
         // Stress test: every monster on the level comes for the player.

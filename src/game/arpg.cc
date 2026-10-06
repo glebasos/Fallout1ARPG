@@ -4985,8 +4985,9 @@ void arpg_tick()
         if (autotest_die == 0 && now >= nextHeal && critter_get_hits(obj_dude) * 100 < stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS) * 40) {
             nextHeal = now + 2000;
             int before = critter_get_hits(obj_dude);
+            double healStart = arpg_now_ms();
             arpg_quick_heal();
-            arpg_log("ARPG autoplay: quick heal %d -> %d\n", before, critter_get_hits(obj_dude));
+            arpg_log("ARPG autoplay: quick heal %d -> %d (%.1f ms)\n", before, critter_get_hits(obj_dude), arpg_now_ms() - healStart);
         }
 
         // Test bot dodges (Space) when it gets hurt.

@@ -1090,6 +1090,12 @@ void intface_update_hit_points(bool animate)
         return;
     }
 
+    // ARPG: the rolling counter blocks the game loop while it rolls (MODLOG
+    // gotcha 30); stimpaks, First Aid etc. ask for it, so never roll.
+    if (arpg_enabled()) {
+        animate = false;
+    }
+
     int hp = critter_get_hits(obj_dude);
     int maxHp = stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS);
 

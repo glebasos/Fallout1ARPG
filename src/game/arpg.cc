@@ -7,6 +7,7 @@
 #include <math.h>
 
 #include <algorithm>
+#include <chrono>
 #include <unordered_map>
 #include <vector>
 
@@ -70,6 +71,7 @@ typedef struct ArpgActor {
     unsigned int knockdownTime;
     Object* target;
     bool triedWeapon;
+    bool pathFailed;
 } ArpgActor;
 
 // Monster ranks and modifiers, after Diablo II's MonUMod.txt (champion,
@@ -271,6 +273,28 @@ static unsigned int stat_latency_total = 0;
 static int stat_latency_count = 0;
 static int stat_unfired = 0;
 static int stat_move_fail = 0;
+
+// Autotest profiling: milliseconds spent per section since the last census.
+static double prof_tick_ms = 0;
+static double prof_critters_ms = 0;
+static double prof_hud_ms = 0;
+static double prof_refresh_ms = 0;
+// hits, autotest, autoplay, player/hud, aggro.
+static double prof_section_ms[5];
+// combat_display, react, apply_damage, float text.
+static double prof_resolve_ms[4];
+static int prof_resolve_count = 0;
+
+static double arpg_now_ms()
+{
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+struct ArpgTickTimer {
+    double start = arpg_now_ms();
+    ~ArpgTickTimer() { prof_tick_ms += arpg_now_ms() - start; }
+};
+
 
 // Energy (the blue globe) fuels special attacks.
 static double energy = -1.0;
@@ -1018,6 +1042,39 @@ char* arpg_item_name(Object* item)
     return buffer;
 }
 
+// What a magic item's affixes do, one line each, for examining it (D2 item
+// tooltips). Returns the number of lines written (0-2).
+int arpg_item_affix_text(Object* item, char* line1, char* line2, int size)
+{
+    if (!arpg_on || arpg_item_quality(item) == 0) {
+        return 0;
+    }
+
+    static const char* weaponPrefixText[WPRE_COUNT] = { "", "+25% damage", "+50% damage", "+2-6 fire damage",
+        "+3-8 shock damage", "heals 10% of damage dealt", "15% chance of double damage" };
+    static const char* weaponSuffixText[WSUF_COUNT] = { "", "+25% attack speed", "+50% attack speed",
+        "heals 15% of damage dealt", "+40% damage to champions and uniques", "more and better loot", "+15% damage" };
+    static const char* armorPrefixText[APRE_COUNT] = { "", "-10% damage taken", "-20% damage taken",
+        "regenerates 1 HP every 4 s", "sheds radiation" };
+    static const char* armorSuffixText[ASUF_COUNT] = { "", "melee attackers take 30% of their damage",
+        "+50% energy regeneration", "10% of hits miss", "more and better loot" };
+
+    bool weapon = item_get_type(item) == ITEM_TYPE_WEAPON;
+    int prefix = arpg_item_prefix(item);
+    int suffix = arpg_item_suffix(item);
+    char* lines[2] = { line1, line2 };
+    int count = 0;
+    if (prefix != 0 && prefix < (weapon ? WPRE_COUNT : APRE_COUNT)) {
+        snprintf(lines[count++], size, "%s: %s.", weapon ? weapon_prefix_names[prefix] : armor_prefix_names[prefix],
+            weapon ? weaponPrefixText[prefix] : armorPrefixText[prefix]);
+    }
+    if (suffix != 0 && suffix < (weapon ? WSUF_COUNT : ASUF_COUNT)) {
+        snprintf(lines[count++], size, "%s: %s.", weapon ? weapon_suffix_names[suffix] : armor_suffix_names[suffix],
+            weapon ? weaponSuffixText[suffix] : armorSuffixText[suffix]);
+    }
+    return count;
+}
+
 // Rolls magic or rare affixes onto a freshly dropped weapon or armor.
 // `findPct` scales the chances (D2 magic find): 100 normal.
 static void arpg_roll_magic(Object* item, int findPct, bool atLeastMagic)
@@ -1725,7 +1782,7 @@ static void arpg_use_shrine(ArpgShrine& shrine, unsigned int now)
     case SHRINE_REFILL:
         critter_adjust_hits(obj_dude, stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS));
         energy = arpg_energy_max();
-        intface_update_hit_points(true);
+        intface_update_hit_points(false);
         snprintf(text, sizeof(text), "%s: life and energy restored.", shrine_info[shrine.kind].name);
         break;
     case SHRINE_MONSTER: {
@@ -2274,6 +2331,12 @@ static void arpg_respawn()
     intface_update_hit_points(false);
     intface_update_items(false);
 
+    // A moment of grace: the entrance can be inside the fight (encounter
+    // maps). Dodge i-frames, and monsters notice the player a bit later.
+    unsigned int now = get_time();
+    dodge_until = now + 2500;
+    next_aggro_check = now + 2500;
+
     char text[128];
     snprintf(text, sizeof(text), "You rise again. You lost %d caps.", lost);
     arpg_print(text);
@@ -2409,6 +2472,7 @@ static void arpg_on_kill(Object* victim, Object* killer)
 
 static void arpg_resolve(ArpgAttack* aa)
 {
+    prof_resolve_count++;
     Attack* attack = &(aa->attack);
     Object* attacker = attack->attacker;
     Object* defender = attack->defender;
@@ -2490,9 +2554,12 @@ static void arpg_resolve(ArpgAttack* aa)
 
     bool involvesPlayer = attacker == obj_dude || defender == obj_dude || isPartyMember(attacker) || isPartyMember(defender);
     if (involvesPlayer) {
+        double profStart = arpg_now_ms();
         combat_display(attack);
+        prof_resolve_ms[0] += arpg_now_ms() - profStart;
     }
 
+    double profReact = arpg_now_ms();
     if (hit) {
         arpg_react(attack, defender, attack->defenderDamage, attack->defenderFlags, attack->defenderKnockback);
     }
@@ -2501,7 +2568,12 @@ static void arpg_resolve(ArpgAttack* aa)
         arpg_react(attack, attack->extras[index], attack->extrasDamage[index], attack->extrasFlags[index], attack->extrasKnockback[index]);
     }
 
-    apply_damage(attack, true);
+    prof_resolve_ms[1] += arpg_now_ms() - profReact;
+    double profApply = arpg_now_ms();
+    // Not animated: Fallout's rolling HP counter blocks the game loop for a
+    // few hundred milliseconds per hit, which a swarm turns into a slideshow.
+    apply_damage(attack, false);
+    prof_resolve_ms[2] += arpg_now_ms() - profApply;
 
     arpg_log("ARPG: %s -> %s hit=%d dmg=%d hp=%d dead=%d\n",
         arpg_label(attacker),
@@ -2517,7 +2589,9 @@ static void arpg_resolve(ArpgAttack* aa)
             bool crit = (attack->defenderFlags & DAM_CRITICAL) != 0 || (attack->attackerFlags & DAM_CRITICAL) != 0;
             snprintf(text, sizeof(text), crit ? "%d!" : "%d", attack->defenderDamage);
             int color = defender == obj_dude ? colorTable[31744] : (crit ? colorTable[32256] : colorTable[32767]);
+            double profFloat = arpg_now_ms();
             arpg_float_text(defender, text, color);
+            prof_resolve_ms[3] += arpg_now_ms() - profFloat;
         } else if (!hit && involvesPlayer) {
             arpg_float_text(defender, "miss", colorTable[21140]);
         }
@@ -3418,9 +3492,15 @@ static void arpg_critter_tick(Object* critter, unsigned int now)
         if (arpg_try_phase(critter, target, now)) {
             return;
         }
-        if (!anim_busy(critter) || now >= actor.nextRepath) {
+        // Re-path when the last move ended, or once a second while moving.
+        // A path that failed (the way is blocked by the rest of the pack)
+        // waits before trying again: a swarm otherwise runs hundreds of
+        // failing searches a second.
+        bool idle = !anim_busy(critter);
+        if ((idle && !actor.pathFailed) || now >= actor.nextRepath) {
             arpg_move_towards(critter, target);
-            actor.nextRepath = now + 1200;
+            actor.pathFailed = !anim_busy(critter);
+            actor.nextRepath = now + (actor.pathFailed ? 700 + roll_random(0, 600) : 1200);
         }
         return;
     }
@@ -3446,6 +3526,8 @@ static void arpg_critter_tick(Object* critter, unsigned int now)
 
 void arpg_tick()
 {
+    ArpgTickTimer tickTimer;
+
     if (!arpg_on || obj_dude == NULL) {
         return;
     }
@@ -3468,7 +3550,9 @@ void arpg_tick()
     }
 
     if (now >= next_list_refresh) {
+        double refreshStart = arpg_now_ms();
         arpg_refresh_list();
+        prof_refresh_ms += arpg_now_ms() - refreshStart;
         next_list_refresh = now + 1000;
     }
 
@@ -3476,6 +3560,8 @@ void arpg_tick()
         populate_pending = false;
         arpg_populate_level();
     }
+
+    double profMark = arpg_now_ms();
 
     // Resolve hits queued by animation callbacks.
     if (!pending_hits.empty()) {
@@ -3488,6 +3574,9 @@ void arpg_tick()
             arpg_release(aa);
         }
     }
+
+    prof_section_ms[0] += arpg_now_ms() - profMark;
+    profMark = arpg_now_ms();
 
     if ((obj_dude->data.critter.combat.results & DAM_DEAD) != 0) {
         return;
@@ -3527,6 +3616,16 @@ void arpg_tick()
             }
             autotest_start = now;
             arpg_log("ARPG autotest start, map %d elevation %d\n", map_get_index_number(), map_elevation);
+
+            // The player's own starting kit must not carry affix bits either.
+            int flagged = 0;
+            Inventory* inventory = &(obj_dude->data.inventory);
+            for (int index = 0; index < inventory->length; index++) {
+                if ((inventory->items[index].item->flags & ARPG_ITEM_AFFIX_MASK) != 0) {
+                    flagged++;
+                }
+            }
+            arpg_log("ARPG: player inventory affix-bit items: %d of %d\n", flagged, inventory->length);
             for (int index = 0; index < crit_count; index++) {
                 Object* critter = crit_list[index];
                 if (critter != obj_dude) {
@@ -3754,8 +3853,29 @@ void arpg_tick()
         }
 
         static unsigned int nextCensus = 0;
+        static unsigned int censusTicks = 0;
+        static unsigned int lastCensus = 0;
+        censusTicks++;
         if (now >= nextCensus) {
             nextCensus = now + 10000;
+            // Game loop frames per second (arpg_tick runs once per frame).
+            if (lastCensus != 0 && now > lastCensus) {
+                double seconds = (now - lastCensus) / 1000.0;
+                arpg_log("ARPG census: %u ticks/s; arpg ms/s: tick %.1f (critters %.1f, hud %.1f, refresh %.1f)\n",
+                    censusTicks * 1000 / (now - lastCensus),
+                    prof_tick_ms / seconds, prof_critters_ms / seconds, prof_hud_ms / seconds, prof_refresh_ms / seconds);
+            }
+            prof_tick_ms = 0;
+            prof_critters_ms = 0;
+            prof_hud_ms = 0;
+            prof_refresh_ms = 0;
+            arpg_log("ARPG census: sections ms/s: hits %.1f autotest %.1f autoplay %.1f player+hud %.1f aggro %.1f\n", prof_section_ms[0] / 10.0, prof_section_ms[1] / 10.0, prof_section_ms[2] / 10.0, prof_section_ms[3] / 10.0, prof_section_ms[4] / 10.0);
+            memset(prof_section_ms, 0, sizeof(prof_section_ms));
+            arpg_log("ARPG census: resolve x%d ms/s: display %.1f react %.1f apply %.1f float %.1f\n", prof_resolve_count, prof_resolve_ms[0] / 10.0, prof_resolve_ms[1] / 10.0, prof_resolve_ms[2] / 10.0, prof_resolve_ms[3] / 10.0);
+            memset(prof_resolve_ms, 0, sizeof(prof_resolve_ms));
+            prof_resolve_count = 0;
+            lastCensus = now;
+            censusTicks = 0;
             int alive[4] = { 0 };
             int engaged[4] = { 0 };
             for (int index = 0; index < crit_count; index++) {
@@ -3817,6 +3937,9 @@ void arpg_tick()
             game_user_wants_to_quit = 2;
         }
     }
+
+    prof_section_ms[1] += arpg_now_ms() - profMark;
+    profMark = arpg_now_ms();
 
     if (arpg_test && !autotest_armed && autotest_weapon_pid != -1) {
         autotest_armed = true;
@@ -3882,6 +4005,13 @@ void arpg_tick()
                 weapon->flags |= ((autotest_magic % 16) << ARPG_ITEM_SUFFIX_SHIFT) & ARPG_ITEM_SUFFIX_MASK;
             }
             arpg_log("ARPG autotest: armed with %s\n", item_name(weapon));
+            if (autotest_magic > 0) {
+                // What the player sees when examining it.
+                obj_examine_func(obj_dude, weapon, [](char* text) {
+                    arpg_log("ARPG autotest: examine: %s\n", text);
+                    display_print(text);
+                });
+            }
 
             // Caps on the floor nearby, for the walk-over pickup.
             for (int pile = 0; pile < 3; pile++) {
@@ -4023,6 +4153,9 @@ void arpg_tick()
         dude_knockdown_time = 0;
     }
 
+    prof_section_ms[2] += arpg_now_ms() - profMark;
+    profMark = arpg_now_ms();
+
     arpg_energy_tick(now);
     if (!downed) {
         arpg_caps_tick(now);
@@ -4032,7 +4165,9 @@ void arpg_tick()
         arpg_hold_tick(now);
         arpg_player_tick(now);
     }
+    double hudStart = arpg_now_ms();
     arpg_hud_tick(now);
+    prof_hud_ms += arpg_now_ms() - hudStart;
 
     if ((obj_dude->data.critter.combat.results & DAM_KNOCKED_OUT) != 0
         && (obj_dude->data.critter.combat.results & DAM_DEAD) == 0) {
@@ -4042,9 +4177,14 @@ void arpg_tick()
         arpg_log("ARPG: player knockout downgraded to knockdown\n");
     }
 
+    prof_section_ms[3] += arpg_now_ms() - profMark;
+    profMark = arpg_now_ms();
+
     if (!downed) {
         arpg_aggro_tick(now);
     }
+
+    prof_section_ms[4] += arpg_now_ms() - profMark;
 
     bool alert = now < alert_until;
     bool joinCheck = alert && now >= next_join_check;
@@ -4053,6 +4193,7 @@ void arpg_tick()
     }
 
     bool anyEngaged = false;
+    double crittersStart = arpg_now_ms();
 
     for (int index = 0; index < crit_count; index++) {
         Object* critter = crit_list[index];
@@ -4080,6 +4221,8 @@ void arpg_tick()
             anyEngaged = true;
         }
     }
+
+    prof_critters_ms += arpg_now_ms() - crittersStart;
 
     if (anyEngaged) {
         alert_until = std::max(alert_until, now + 3000);
@@ -4172,7 +4315,7 @@ static bool arpg_use_drug(const int* pids, int count, const char* floatText)
                 arpg_float_text(obj_dude, floatText, colorTable[992]);
             }
         }
-        intface_update_hit_points(true);
+        intface_update_hit_points(false);
         intface_update_items(false);
         gsound_play_sfx_file("ib1p1xx1");
         return true;

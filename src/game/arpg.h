@@ -94,6 +94,8 @@ bool arpg_is_spawned(Object* obj);
 int arpg_item_quality(Object* item);
 // item_name() hook: the affixed name of a magic or rare item, else NULL.
 char* arpg_item_name(Object* item);
+// Examine text: what each affix does, one line each; returns the count.
+int arpg_item_affix_text(Object* item, char* line1, char* line2, int size);
 
 // Diablo-style monster rank for the HUD: 0 normal, 1 minion, 2 champion,
 // 3 unique. Fills the display name and the modifier list ("Champion",

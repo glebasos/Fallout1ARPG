@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "game/anim.h"
+#include "game/arpg.h"
 #include "game/combat.h"
 #include "game/critter.h"
 #include "game/display.h"
@@ -262,6 +263,15 @@ int obj_examine_func(Object* critter, Object* target, void (*fn)(char* string))
         } else {
             if (PID_TYPE(target->pid) != OBJ_TYPE_CRITTER || !critter_is_dead(target)) {
                 fn(description);
+            }
+        }
+
+        // ARPG: what a magic item's affixes do.
+        if (PID_TYPE(target->pid) == OBJ_TYPE_ITEM) {
+            char affixes[2][128];
+            int count = arpg_item_affix_text(target, affixes[0], affixes[1], sizeof(affixes[0]));
+            for (int index = 0; index < count; index++) {
+                fn(affixes[index]);
             }
         }
     }

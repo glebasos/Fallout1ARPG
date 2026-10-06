@@ -1105,6 +1105,8 @@ static const ArpgUniqueItem unique_items[] = {
     { 2, "Scorpion Shell", { APRE_REINFORCED, 0 }, { ASUF_THORNS, 0 } }, // Metal Armor
     { 1, "Lead Mantle", { APRE_LEAD_LINED, APRE_STURDY }, { ASUF_EVASION, 0 } }, // Leather Armor
     { 17, "Bulwark of the Hub", { APRE_REINFORCED, APRE_REGENERATING }, { ASUF_FORTUNE, 0 } }, // Combat Armor
+    // D2 homage (Windforce: huge damage + attack speed); index 15 is the last one the 4-bit field holds.
+    { 143, "Dust Devil", { WPRE_BRUTAL, WPRE_DEADLY }, { WSUF_HASTE, WSUF_POWER } }, // Sniper Rifle
 };
 
 #define UNIQUE_ITEM_COUNT ((int)(sizeof(unique_items) / sizeof(*unique_items)))
@@ -4305,7 +4307,7 @@ void arpg_tick()
         if (autotest_loot && !lootDone && now - autotest_start > 1500) {
             lootDone = true;
             // { pid, prefix, suffix }: normal, magic, rare, unique (Old Faithful), stimpak, caps.
-            static const int drops[][3] = { { 8, 0, 0 }, { 8, 1, 0 }, { 94, 2, 3 }, { 23, UNIQUE_MARKER, 6 }, { PROTO_ID_STIMPACK, 0, 0 }, { PROTO_ID_MONEY, 0, 0 } };
+            static const int drops[][3] = { { 8, 0, 0 }, { 8, 1, 0 }, { 94, 2, 3 }, { 143, UNIQUE_MARKER, 15 }, { PROTO_ID_STIMPACK, 0, 0 }, { PROTO_ID_MONEY, 0, 0 } };
             for (const auto& drop : drops) {
                 Object* item = arpg_drop_item(obj_dude, drop[0], drop[0] == PROTO_ID_MONEY ? 77 : 1);
                 if (item != NULL) {

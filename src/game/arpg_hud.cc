@@ -503,6 +503,18 @@ void arpg_hud_toggle_minimap()
     }
 }
 
+bool arpg_hud_minimap_on()
+{
+    return map_enabled;
+}
+
+void arpg_hud_set_minimap(bool on)
+{
+    if (on != map_enabled) {
+        arpg_hud_toggle_minimap();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // D2 experience bar: a thin strip along the top of the interface bar.
 // ---------------------------------------------------------------------------

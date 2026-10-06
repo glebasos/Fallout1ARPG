@@ -134,8 +134,16 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
   comes back).
 - Kills drop caps, stimpaks, ammo for your weapon and gear scaled by the monster's XP. XP is awarded on kill.
 
+## ARPG options page (ESC menu)
+ESC → **ARPG OPTIONS** (or press A in the Options menu) lists every on/off switch the mod added: ARPG mode,
+control scheme, always run, hold to move, right click behaviour, shoot on the move, respawn, globes/XP bar,
+hotkey bar, minimap, damage numbers, enemy outlines, smooth zoom, loot drops, loot amount (50-500%), loot
+labels and outlines, auto-pickup of caps / drugs / ammo, monster packs, shrines and raider reinforcements.
+Click a row to change it; hovering shows what it does. Changes apply at once (packs and shrines from the next
+area, ARPG mode after a restart) and are saved to the `[arpg]` keys below when the page closes.
+
 ## Config (`[arpg]` in fallout.cfg)
-`enabled`, `controls` (poe/wasd/classic), `dodge_cost` (20), `always_run`, `hold_to_move`, `rmb_toggles_mode` (0), `rmb_toggles_mode` (0), `damage_numbers`, `globes`, `loot_drops`, `loot_pct`,
+`enabled`, `controls` (poe/wasd/classic), `dodge_cost` (20), `always_run`, `hold_to_move`, `rmb_toggles_mode` (0), `damage_numbers`, `globes`, `loot_drops`, `loot_pct`,
 `energy_regen_pct`, `enemy_attack_delay_pct` (130), `player_attack_delay_pct` (100), `stagger_pct`,
 `player_stagger_pct`, `stagger_immunity_ms`, `leash_distance`, `labels_always`, `loot_highlight` (1), `enemy_outline` (1), `auto_caps`, `auto_consumables` (1), `auto_ammo` (1), `respawn` (1),
 `respawn_caps_pct` (10).
@@ -165,6 +173,8 @@ seconds (with a knocked-out pack monster) and loads it back 3 s later.
 `[arpg]autotest_rmb=1` presses F twice, then right-clicks ~1 hex off the nearest enemy every 3 s (logs the snap and mode).
 `[arpg]autotest_zoom=1` steps the zoom up to 200%, down to 50% and back (3.5 s each), puts the mouse on the
 player each time and logs whether it maps back to the player's tile (`OK`/`MISMATCH`).
+`[arpg]autotest_options=N` opens ESC → ARPG OPTIONS after N s with real SDL keys, presses a few rows and logs
+the values (`options ... now ...`), with screenshots of both pages.
 `[arpg]autotest_hover=1` walks the hotkey-bar tooltip across the slots (1.5 s each) for screenshots.
 `[arpg]dump_items=1` logs every item PID. Test keys are reset in fallout.cfg on exit, but other
 overrides like `controls` or `dodge_cost` are saved.
@@ -191,6 +201,7 @@ homage uniques). The optional D2 item art is generated on the player's machine f
   (`arpg_handle_key`, WASD tick, dodge, flasks), autotest.
 - `src/game/arpg_zoom.cc` – map zoom: render buffer of view size / zoom, scaled into the display window
   (`map_display_draw`); `tile_set_buffer` / `obj_set_buffer` / `text_object_set_buffer` retarget the renderer.
+- `src/game/arpg_options.cc` – the ARPG options page (table of settings); `options.cc` adds its button.
 - `src/game/arpg_hud.cc` – globes, hotkey bar, target bar, XP bar, minimap and Alt labels. `src/game/arpg_crash.cc` – autotest crash reporter.
 - Hooks: `game_handle_input` → `arpg_handle_key` before Fallout's key switch, `combat()` / `combat_attack_this()` redirect, `main_game_loop` tick, `gmouse` click handling,
   `script_chk_critters` skips critter_p_proc for fighting critters, `obj_remove_all` resets state,

@@ -124,6 +124,16 @@ int arpg_zoom_pct()
     return zoom_pct;
 }
 
+bool arpg_zoom_smooth()
+{
+    return zoom_smooth;
+}
+
+void arpg_zoom_set_smooth(bool smooth)
+{
+    zoom_smooth = smooth;
+}
+
 bool arpg_zoom_active()
 {
     return zoom_pct != 100 && view_buf != NULL;

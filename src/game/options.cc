@@ -6,6 +6,7 @@
 
 #include <algorithm>
 
+#include "game/arpg.h"
 #include "game/art.h"
 #include "game/combat.h"
 #include "game/combatai.h"
@@ -37,7 +38,8 @@ namespace fallout {
 #define PREFERENCES_WINDOW_WIDTH 640
 #define PREFERENCES_WINDOW_HEIGHT 480
 
-#define OPTIONS_WINDOW_BUTTONS_COUNT 10
+// ARPG: a sixth button (ARPG options) between Preferences and Exit.
+#define OPTIONS_WINDOW_BUTTONS_COUNT 12
 #define PRIMARY_OPTION_VALUE_COUNT 4
 #define SECONDARY_OPTION_VALUE_COUNT 2
 
@@ -426,6 +428,13 @@ int do_options()
                 // PREFERENCES
                 showPreferences = true;
                 break;
+            case KEY_UPPERCASE_A:
+            case KEY_LOWERCASE_A:
+                gsound_play_sfx_file("ib1p1xx1");
+                // FALLTHROUGH
+            case 505:
+                arpg_options_dialog();
+                break;
             case KEY_PLUS:
             case KEY_EQUAL:
                 IncGamma();
@@ -516,12 +525,23 @@ static int OptnStart()
         memcpy(opbtns[index], opbmp[cycle + 1], ginfo[OPTIONS_WINDOW_FRM_BUTTON_ON].width * ginfo[OPTIONS_WINDOW_FRM_BUTTON_ON].height);
     }
 
-    int optionsWindowX = (screenGetWidth() - ginfo[OPTIONS_WINDOW_FRM_BACKGROUND].width) / 2;
-    int optionsWindowY = (screenGetHeight() - ginfo[OPTIONS_WINDOW_FRM_BACKGROUND].height) / 2 - 60;
+    // ARPG: the background has five button slots; the window is one slot
+    // taller and the last slot's strip of the background is drawn twice.
+    int backgroundWidth = ginfo[OPTIONS_WINDOW_FRM_BACKGROUND].width;
+    int backgroundHeight = ginfo[OPTIONS_WINDOW_FRM_BACKGROUND].height;
+    int slotStep = ginfo[OPTIONS_WINDOW_FRM_BUTTON_ON].height + 3;
+    int lastSlotY = std::min(17 + 4 * slotStep, backgroundHeight - slotStep);
+    int windowHeight = backgroundHeight + slotStep;
+
+    int optionsWindowX = (screenGetWidth() - backgroundWidth) / 2;
+    int optionsWindowY = (screenGetHeight() - windowHeight) / 2 - 60;
+    if (optionsWindowY < 0) {
+        optionsWindowY = 0;
+    }
     optnwin = win_add(optionsWindowX,
         optionsWindowY,
-        ginfo[0].width,
-        ginfo[0].height,
+        backgroundWidth,
+        windowHeight,
         256,
         WINDOW_MODAL | WINDOW_DONT_MOVE_TOP);
 
@@ -549,18 +569,33 @@ static int OptnStart()
     gmouse_set_cursor(MOUSE_CURSOR_ARROW);
 
     winbuf = win_get_buf(optnwin);
-    memcpy(winbuf, opbmp[OPTIONS_WINDOW_FRM_BACKGROUND], ginfo[OPTIONS_WINDOW_FRM_BACKGROUND].width * ginfo[OPTIONS_WINDOW_FRM_BACKGROUND].height);
+    unsigned char* background = opbmp[OPTIONS_WINDOW_FRM_BACKGROUND];
+    memcpy(winbuf, background, backgroundWidth * (lastSlotY + slotStep));
+    memcpy(winbuf + backgroundWidth * (lastSlotY + slotStep), background + backgroundWidth * lastSlotY, backgroundWidth * slotStep);
+    memcpy(winbuf + backgroundWidth * (lastSlotY + 2 * slotStep), background + backgroundWidth * (lastSlotY + slotStep), backgroundWidth * (backgroundHeight - lastSlotY - slotStep));
 
     text_font(103);
 
     int textY = (ginfo[OPTIONS_WINDOW_FRM_BUTTON_ON].height - text_height()) / 2 + 1;
     int buttonY = 17;
 
+    // Save, Load, Preferences, ARPG, Exit, Done (message ids 0-4, events 500-505).
+    static const int slotMessages[] = { 0, 1, 2, -1, 3, 4 };
+    static const int slotEvents[] = { 500, 501, 502, 505, 503, 504 };
+
     for (int index = 0; index < OPTIONS_WINDOW_BUTTONS_COUNT; index += 2) {
         char text[128];
 
-        const char* msg = getmsg(&optn_msgfl, &optnmesg, index / 2);
-        strcpy(text, msg);
+        int slot = index / 2;
+        if (slotMessages[slot] == -1) {
+            strcpy(text, "ARPG OPTIONS");
+            if (text_width(text) > ginfo[OPTIONS_WINDOW_FRM_BUTTON_ON].width - 8) {
+                strcpy(text, "ARPG");
+            }
+        } else {
+            const char* msg = getmsg(&optn_msgfl, &optnmesg, slotMessages[slot]);
+            strcpy(text, msg);
+        }
 
         int textX = (ginfo[OPTIONS_WINDOW_FRM_BUTTON_ON].width - text_width(text)) / 2;
         if (textX < 0) {
@@ -570,7 +605,7 @@ static int OptnStart()
         text_to_buf(opbtns[index] + ginfo[OPTIONS_WINDOW_FRM_BUTTON_ON].width * textY + textX, text, ginfo[OPTIONS_WINDOW_FRM_BUTTON_ON].width, ginfo[OPTIONS_WINDOW_FRM_BUTTON_ON].width, colorTable[18979]);
         text_to_buf(opbtns[index + 1] + ginfo[OPTIONS_WINDOW_FRM_BUTTON_ON].width * textY + textX, text, ginfo[OPTIONS_WINDOW_FRM_BUTTON_ON].width, ginfo[OPTIONS_WINDOW_FRM_BUTTON_ON].width, colorTable[14723]);
 
-        int btn = win_register_button(optnwin, 13, buttonY, ginfo[OPTIONS_WINDOW_FRM_BUTTON_ON].width, ginfo[OPTIONS_WINDOW_FRM_BUTTON_ON].height, -1, -1, -1, index / 2 + 500, opbtns[index], opbtns[index + 1], NULL, 32);
+        int btn = win_register_button(optnwin, 13, buttonY, ginfo[OPTIONS_WINDOW_FRM_BUTTON_ON].width, ginfo[OPTIONS_WINDOW_FRM_BUTTON_ON].height, -1, -1, -1, slotEvents[slot], opbtns[index], opbtns[index + 1], NULL, 32);
         if (btn != -1) {
             win_register_button_sound_func(btn, gsound_lrg_butt_press, gsound_lrg_butt_release);
         }

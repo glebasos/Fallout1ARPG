@@ -18,6 +18,20 @@ bool arpg_enabled();
 bool arpg_always_run();
 bool arpg_labels_always();
 
+// ARPG options page (arpg_options.cc), opened from the Options (ESC) menu.
+void arpg_options_dialog();
+// The live variable behind a boolean / integer [arpg] key, or NULL when the
+// key is only read from game_config (HUD keys) or not a live setting.
+bool* arpg_option_flag(const char* key);
+int* arpg_option_int(const char* key);
+// Ctrl+W: classic -> poe -> wasd.
+void arpg_cycle_controls();
+// debug_printf, plus arpg.log under autotest.
+void arpg_log(const char* format, ...);
+// `autotest_options=N` opened the options menu: the ARPG page drives itself
+// once (true only on the first call after that).
+bool arpg_autotest_options_script();
+
 // Called once per frame from the main game loop.
 void arpg_tick();
 
@@ -63,6 +77,8 @@ int arpg_energy_max();
 void arpg_hud_tick(unsigned int now);
 void arpg_hud_reset();
 void arpg_hud_toggle_minimap();
+bool arpg_hud_minimap_on();
+void arpg_hud_set_minimap(bool on);
 // True while Alt / Z loot highlights are shown (gates OUTLINE_TYPE_ARPG_LOOT).
 bool arpg_loot_highlights_visible();
 // Hotkey bar: flashes the slot bound to `key` (called for every game key).
@@ -157,6 +173,9 @@ void arpg_zoom_step(int delta);
 void arpg_zoom_set_pct(int pct);
 int arpg_zoom_pct();
 bool arpg_zoom_active();
+// Bilinear scaling (`[arpg] zoom_smooth`); off = nearest pixel.
+bool arpg_zoom_smooth();
+void arpg_zoom_set_smooth(bool smooth);
 // Tile renderer blit callback while zoomed: scales the render-buffer rect
 // into the display window and draws it.
 void arpg_zoom_blit(Rect* rect);

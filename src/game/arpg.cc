@@ -380,6 +380,8 @@ static bool autotest_rmb = false;
 static int autotest_swap = 0;
 // Steps the map zoom every 3.5 s and checks the mouse mapping.
 static int autotest_zoom = 0;
+static int autotest_options = 0;
+static bool autotest_options_script = false;
 // Freezes the main thread for 12 s after N seconds (hang watchdog test).
 static int autotest_hang = 0;
 static bool autotest_swarm = false;
@@ -411,7 +413,7 @@ static int stat_attack_fail = 0;
 static int stat_react_blocked = 0;
 static int stat_kills = 0;
 
-static void arpg_log(const char* format, ...)
+void arpg_log(const char* format, ...)
 {
     char buffer[512];
     va_list args;
@@ -559,6 +561,51 @@ bool arpg_always_run()
 bool arpg_labels_always()
 {
     return labels_always;
+}
+
+bool arpg_autotest_options_script()
+{
+    bool pending = autotest_options_script;
+    autotest_options_script = false;
+    return pending;
+}
+
+bool* arpg_option_flag(const char* key)
+{
+    static const struct {
+        const char* key;
+        bool* var;
+    } flags[] = {
+        { "always_run", &always_run },
+        { "hold_to_move", &hold_to_move },
+        { "rmb_toggles_mode", &rmb_toggles_mode },
+        { "move_shot", &move_shot },
+        { "damage_numbers", &show_numbers },
+        { "labels_always", &labels_always },
+        { "enemy_outline", &enemy_outline },
+        { "loot_drops", &loot_drops },
+        { "auto_caps", &auto_caps },
+        { "auto_consumables", &auto_consumables },
+        { "auto_ammo", &auto_ammo },
+        { "respawn", &respawn_enabled },
+        { "packs", &packs_enabled },
+        { "shrines", &shrines_enabled },
+        { "raider_packs", &raider_packs },
+    };
+    for (const auto& flag : flags) {
+        if (strcmp(flag.key, key) == 0) {
+            return flag.var;
+        }
+    }
+    return NULL;
+}
+
+int* arpg_option_int(const char* key)
+{
+    if (strcmp(key, "loot_pct") == 0) {
+        return &loot_pct;
+    }
+    return NULL;
 }
 
 bool arpg_enemy_outline(Object* obj)
@@ -742,6 +789,7 @@ void arpg_init()
     // Autotest: swap weapons (B) every N ms (pair with autotest_wasd).
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_swap", &autotest_swap);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_zoom", &autotest_zoom);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_options", &autotest_options);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_hang", &autotest_hang);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_swarm", &autotest_swarm);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_magic", &autotest_magic);
@@ -765,7 +813,7 @@ void arpg_init()
 
     // Command-line test switches are merged into game_config, which CE saves
     // back to fallout.cfg on exit. Neutralize them so they don't stick.
-    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_swap", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_loot", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile", "autotest_sweep_encounters", "autotest_rmb", "autotest_hover", "autotest_zoom", "autotest_hang" };
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_swap", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_loot", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile", "autotest_sweep_encounters", "autotest_rmb", "autotest_hover", "autotest_zoom", "autotest_hang", "autotest_options" };
     for (const char* key : testKeys) {
         char* value;
         if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
@@ -4760,6 +4808,26 @@ void arpg_tick()
             nextSwap = now + autotest_swap;
         }
 
+        // Options test: ESC (options menu), F12 (screenshot of it), A (ARPG
+        // options page, which scripts itself from there) as real SDL keys.
+        if (autotest_options > 0 && now - autotest_start > (unsigned int)autotest_options * 1000) {
+            autotest_options = 0;
+            arpg_log("ARPG autotest: opening the options menu\n");
+            autotest_options_script = true;
+            static const SDL_Scancode keys[] = { SDL_SCANCODE_ESCAPE, SDL_SCANCODE_F12, SDL_SCANCODE_A };
+            for (SDL_Scancode scancode : keys) {
+                SDL_Event event = {};
+                event.type = SDL_KEYDOWN;
+                event.key.state = SDL_PRESSED;
+                event.key.keysym.scancode = scancode;
+                event.key.keysym.sym = SDL_GetKeyFromScancode(scancode);
+                SDL_PushEvent(&event);
+                event.type = SDL_KEYUP;
+                event.key.state = SDL_RELEASED;
+                SDL_PushEvent(&event);
+            }
+        }
+
         if (autotest_hang > 0 && now - autotest_start > (unsigned int)autotest_hang * 1000) {
             autotest_hang = 0;
             arpg_log("ARPG autotest: freezing the main thread for 12 s\n");
@@ -6187,7 +6255,7 @@ static void arpg_skill_shot(int hitLocation)
     arpg_player_aimed(target, hitLocation);
 }
 
-static void arpg_cycle_controls()
+void arpg_cycle_controls()
 {
     static const char* names[] = { "classic", "poe", "wasd" };
     static const char* descriptions[] = {

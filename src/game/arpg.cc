@@ -262,6 +262,8 @@ static bool enemy_outline = true;
 static bool rmb_toggles_mode = false;
 static bool hold_to_move = true;
 static bool loot_drops = true;
+// Corpses spill their whole inventory on the ground (arpg_drop_inventory).
+static bool inventory_drops = true;
 static bool auto_caps = true;
 static bool auto_consumables = true;
 static bool auto_ammo = true;
@@ -377,6 +379,7 @@ static bool autotest_shrines = false;
 static bool autotest_gallery = false;
 static bool autotest_loot = false;
 static bool autotest_manual_caps = false;
+static bool autotest_corpse_items = false;
 static bool autotest_rmb = false;
 static int autotest_swap = 0;
 // Steps the map zoom every 3.5 s and checks the mouse mapping.
@@ -585,6 +588,7 @@ bool* arpg_option_flag(const char* key)
         { "labels_always", &labels_always },
         { "enemy_outline", &enemy_outline },
         { "loot_drops", &loot_drops },
+        { "inventory_drops", &inventory_drops },
         { "auto_caps", &auto_caps },
         { "auto_consumables", &auto_consumables },
         { "auto_ammo", &auto_ammo },
@@ -744,6 +748,7 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "labels_always", &labels_always);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "enemy_outline", &enemy_outline);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "loot_drops", &loot_drops);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "inventory_drops", &inventory_drops);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "auto_caps", &auto_caps);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "auto_consumables", &auto_consumables);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "auto_ammo", &auto_ammo);
@@ -787,6 +792,7 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_gallery", &autotest_gallery);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_loot", &autotest_loot);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_manual_caps", &autotest_manual_caps);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_corpse_items", &autotest_corpse_items);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_rmb", &autotest_rmb);
     // Autotest: swap weapons (B) every N ms (pair with autotest_wasd).
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_swap", &autotest_swap);
@@ -815,7 +821,7 @@ void arpg_init()
 
     // Command-line test switches are merged into game_config, which CE saves
     // back to fallout.cfg on exit. Neutralize them so they don't stick.
-    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_swap", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_loot", "autotest_manual_caps", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile", "autotest_sweep_encounters", "autotest_rmb", "autotest_hover", "autotest_zoom", "autotest_hang", "autotest_options" };
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_swap", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_loot", "autotest_manual_caps", "autotest_corpse_items", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile", "autotest_sweep_encounters", "autotest_rmb", "autotest_hover", "autotest_zoom", "autotest_hang", "autotest_options" };
     for (const char* key : testKeys) {
         char* value;
         if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
@@ -3916,6 +3922,84 @@ static Object* arpg_drop_item(Object* corpse, int pid, int quantity)
     return item;
 }
 
+// Units of one stack that spill out; the rest stays on the corpse, so a dead
+// merchant doesn't carpet the map.
+#define INVENTORY_DROP_STACK_MAX 10
+
+// D2-style corpse loot: everything the dead critter carried lands on the
+// ground around it (show_death, after the death animation). Same removal
+// as item_drop_all, but walked from the end (removals compact the list) and
+// spread over free tiles. Equipped gear is taken off the sprite as well.
+void arpg_drop_inventory(Object* critter)
+{
+    if (!arpg_enabled() || !inventory_drops || critter == NULL || critter == obj_dude
+        || isPartyMember(critter) || critter->tile == -1) {
+        return;
+    }
+
+    Inventory* inventory = &(critter->data.inventory);
+    int frmId = critter->fid & 0xFFF;
+    bool unequipped = false;
+    int dropped = 0;
+    std::string names;
+    for (int index = inventory->length - 1; index >= 0; index--) {
+        int units = std::min(inventory->items[index].quantity, INVENTORY_DROP_STACK_MAX);
+        if (inventory->items[index].item->pid == PROTO_ID_MONEY) {
+            units = 1;
+        }
+        for (int unit = 0; unit < units && index < inventory->length; unit++) {
+            InventoryItem* entry = &(inventory->items[index]);
+            Object* item = entry->item;
+            int quantity = item->pid == PROTO_ID_MONEY ? entry->quantity : 1;
+
+            if ((item->flags & OBJECT_EQUIPPED) != 0) {
+                unequipped = true;
+                if ((item->flags & OBJECT_WORN) != 0) {
+                    Proto* proto;
+                    if (proto_ptr(critter->pid, &proto) != -1) {
+                        frmId = proto->fid & 0xFFF;
+                    }
+                    adjust_ac(critter, item, NULL);
+                }
+            }
+
+            // Removing part of a stack leaves a copy in the slot and frees
+            // `item` to be placed.
+            if (item_remove_mult(critter, item, quantity) != 0) {
+                break;
+            }
+            item->flags &= ~OBJECT_EQUIPPED;
+
+            Rect rect;
+            if (obj_connect(item, arpg_free_tile_near(critter), critter->elevation, &rect) != 0) {
+                if (item_add_force(critter, item, quantity) != 0) {
+                    obj_destroy(item);
+                }
+                break;
+            }
+            if (item->pid == PROTO_ID_MONEY) {
+                item_caps_set_amount(item, quantity);
+            }
+            tile_refresh_rect(&rect, critter->elevation);
+            if (dropped++ < 8) {
+                names += dropped > 1 ? ", " : "";
+                names += item_name(item);
+            }
+        }
+    }
+
+    if (unequipped) {
+        Rect rect;
+        int fid = art_id(OBJ_TYPE_CRITTER, frmId, FID_ANIM_TYPE(critter->fid), 0, (critter->fid & 0x70000000) >> 28);
+        obj_change_fid(critter, fid, &rect);
+        tile_refresh_rect(&rect, critter->elevation);
+    }
+
+    if (dropped > 0) {
+        arpg_log("ARPG: %s spilled %d items: %s%s\n", critter_name(critter), dropped, names.c_str(), unequipped ? " (gear taken off)" : "");
+    }
+}
+
 // Diablo-style drops. `rolls` is the number of item picks (D2 treasure class
 // picks: champions get more, uniques more still and always some gear).
 // Spawned pack fodder drops less often, so packs don't flood the floor.
@@ -4712,6 +4796,39 @@ void arpg_tick()
             }
             alert_until = now + 10000;
             arpg_log("ARPG autotest: %d people turn hostile\n", count);
+        }
+
+        // Corpse inventory test: every critter carries caps, two stimpaks and
+        // a 10mm pistol (wielded by people), to watch arpg_drop_inventory.
+        static bool corpseItemsDone = false;
+        if (autotest_corpse_items && !corpseItemsDone && now - autotest_start > 2000) {
+            corpseItemsDone = true;
+            int count = 0;
+            for (int index = 0; index < crit_count; index++) {
+                Object* critter = crit_list[index];
+                if (critter == obj_dude || !arpg_alive(critter) || isPartyMember(critter)) {
+                    continue;
+                }
+                // { pid, quantity }; obj_pid_new links the object into the
+                // map list, so it is disconnected once it's in the inventory.
+                static const int gifts[][2] = { { PROTO_ID_MONEY, 15 }, { PROTO_ID_STIMPACK, 2 }, { 8 /* 10mm pistol */, 1 } };
+                for (const auto& gift : gifts) {
+                    Object* item;
+                    if (obj_pid_new(&item, gift[0]) != 0) {
+                        continue;
+                    }
+                    if (item_add_force(critter, item, gift[1]) != 0) {
+                        obj_destroy(item);
+                        continue;
+                    }
+                    obj_disconnect(item, NULL);
+                    if (gift[0] == 8 && !arpg_is_monster_kind(critter)) {
+                        inven_wield(critter, item, 1);
+                    }
+                }
+                count++;
+            }
+            arpg_log("ARPG autotest: corpse items given to %d critters\n", count);
         }
 
         // Stress test: every monster on the level comes for the player.

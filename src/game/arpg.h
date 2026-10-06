@@ -101,6 +101,10 @@ bool arpg_enemy_outline(Object* obj);
 
 bool arpg_is_engaged(Object* critter);
 
+// show_death hook: spills a dead NPC's or monster's inventory onto the ground
+// around the corpse (`inventory_drops`).
+void arpg_drop_inventory(Object* critter);
+
 // Called when a critter is removed from the map.
 void arpg_on_critter_removed(Object* critter);
 

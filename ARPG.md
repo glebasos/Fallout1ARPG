@@ -119,6 +119,10 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
   Nuka-Cola) and **all ammo** are picked up just by walking past them (within 2 hexes). Consumables and ammo
   are skipped while you're at your carry-weight limit. `[arpg] auto_caps=0` / `auto_consumables=0` /
   `auto_ammo=0` turn each off.
+- **Corpses drop their inventory**: when an NPC or monster dies, everything it carried (wielded weapon, worn
+  armor, ammo, caps, drugs, other items) spills onto the tiles around the body, like D2 drops. Up to 10 units
+  of each stack spill; anything beyond that stays on the corpse. Party members never drop. `[arpg]
+  inventory_drops=0` (or ARPG OPTIONS -> Corpses drop inventory) keeps Fallout's loot-the-body behaviour.
 - **Death** works like Diablo II: a killing blow from a monster drops you for three seconds, then you rise again at
   the map entrance with full life, losing 10% of the caps you carry. Monsters forget you while you're down.
   (Deaths outside combat, such as poison or scripted deaths, still end the game.) Set `respawn=0` for
@@ -143,7 +147,7 @@ Click a row to change it; hovering shows what it does. Changes apply at once (pa
 area, ARPG mode after a restart) and are saved to the `[arpg]` keys below when the page closes.
 
 ## Config (`[arpg]` in fallout.cfg)
-`enabled`, `controls` (poe/wasd/classic), `dodge_cost` (20), `always_run`, `hold_to_move`, `rmb_toggles_mode` (0), `damage_numbers`, `globes`, `loot_drops`, `loot_pct`,
+`enabled`, `controls` (poe/wasd/classic), `dodge_cost` (20), `always_run`, `hold_to_move`, `rmb_toggles_mode` (0), `damage_numbers`, `globes`, `loot_drops`, `inventory_drops` (1), `loot_pct`,
 `energy_regen_pct`, `enemy_attack_delay_pct` (130), `player_attack_delay_pct` (100), `stagger_pct`,
 `player_stagger_pct`, `stagger_immunity_ms`, `leash_distance`, `labels_always`, `loot_highlight` (1), `enemy_outline` (1), `auto_caps`, `auto_consumables` (1), `auto_ammo` (1), `respawn` (1),
 `respawn_caps_pct` (10).

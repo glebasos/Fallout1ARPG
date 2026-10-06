@@ -421,6 +421,8 @@ static int show_death(Object* obj, int anim)
         }
     }
 
+    arpg_drop_inventory(obj);
+
     tile_refresh_rect(&dirty_rect, obj->elevation);
 
     return 0;

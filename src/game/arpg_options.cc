@@ -73,6 +73,7 @@ static const ArpgOption column_left[] = {
 static const ArpgOption column_right[] = {
     { OPT_HEADER, NULL, "LOOT", NULL, false },
     { OPT_FLAG, "loot_drops", "Monster loot drops", "Monsters drop weapons, ammo, drugs, caps, magic and unique items.", true },
+    { OPT_FLAG, "inventory_drops", "Corpses drop inventory", "Dead NPCs and monsters spill everything they carried (weapon, armor, caps, ammo) on the ground.", true },
     { OPT_LOOT_PCT, "loot_pct", "Loot amount", "How much monsters drop (100% = normal).", false },
     { OPT_FLAG, "labels_always", "Always show loot labels (Z)", "Item names stay on screen without holding Alt.", false },
     { OPT_CONFIG, "loot_highlight", "Loot outlines (Alt/Z)", "Ground items are outlined in their quality colour while labels show.", true },

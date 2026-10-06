@@ -332,6 +332,7 @@ static bool autotest_swarm = false;
 static int autotest_magic = 0;
 static bool autotest_encounter = false;
 static bool autotest_hostile = false;
+static bool autotest_sweep_encounters = false;
 
 static unsigned int next_hold_action = 0;
 static int hold_last_tile = -1;
@@ -646,6 +647,7 @@ void arpg_init()
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_magic", &autotest_magic);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_encounter", &autotest_encounter);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_hostile", &autotest_hostile);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_sweep_encounters", &autotest_sweep_encounters);
     // Autotest: hold a WASD direction (0=W 1=D 2=S 3=A) through the real
     // movement path.
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_wasd", &autotest_wasd);
@@ -663,7 +665,7 @@ void arpg_init()
 
     // Command-line test switches are merged into game_config, which CE saves
     // back to fallout.cfg on exit. Neutralize them so they don't stick.
-    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile" };
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile", "autotest_sweep_encounters" };
     for (const char* key : testKeys) {
         char* value;
         if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
@@ -1126,7 +1128,9 @@ char* arpg_item_name(Object* item)
         suffixName = suffix < ASUF_COUNT ? armor_suffix_names[suffix] : "";
     }
 
-    snprintf(buffer, 96, "%s%s%s%s%s",
+    // At most 48 characters: callers like the character sheet export
+    // concatenate three names into 256-byte lines (vanilla names are short).
+    snprintf(buffer, 49, "%s%s%s%s%s",
         prefixName,
         prefixName[0] != '\0' ? " " : "",
         proto_name(item->pid),
@@ -3976,9 +3980,32 @@ void arpg_tick()
 
             if (!moved) {
                 char name[16];
-                int next = sweepMap == 0 ? autotest_sweep : sweepMap + 1;
-                while (next < 200 && map_get_name_idx(name, next) == -1) {
-                    next++;
+                // Encounter sweep: only the random-encounter family, each map
+                // twice in the same game hour, noted as the world map does.
+                static const char* encounterPrefixes[] = { "DESERT", "MOUNTN", "COAST", "CITY", "DESCRVN", "MNTCRVN" };
+                auto isEncounter = [&](const char* mapName) {
+                    for (const char* prefix : encounterPrefixes) {
+                        if (compat_strnicmp(mapName, prefix, strlen(prefix)) == 0) {
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+                static bool revisited = false;
+                int next;
+                if (autotest_sweep_encounters && sweepMap != 0 && !revisited) {
+                    next = sweepMap;
+                    revisited = true;
+                    map_get_name_idx(name, next);
+                } else {
+                    revisited = false;
+                    next = sweepMap == 0 ? autotest_sweep : sweepMap + 1;
+                    while (next < 200 && (map_get_name_idx(name, next) == -1 || (autotest_sweep_encounters && !isEncounter(name)))) {
+                        next++;
+                    }
+                }
+                if (autotest_sweep_encounters && next < 200) {
+                    arpg_note_random_map();
                 }
                 if (next >= 200) {
                     arpg_log("SWEEP done\n");

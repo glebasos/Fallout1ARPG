@@ -56,6 +56,8 @@ int arpg_energy_max();
 void arpg_hud_tick(unsigned int now);
 void arpg_hud_reset();
 void arpg_hud_toggle_minimap();
+// True while Alt / Z loot highlights are shown (gates OUTLINE_TYPE_ARPG_LOOT).
+bool arpg_loot_highlights_visible();
 
 // Shrine boosts for the HUD: seconds left on boost `index` (0 when inactive,
 // -1 past the end) and its short name.

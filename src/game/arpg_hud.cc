@@ -42,6 +42,7 @@ static bool hud_hidden = false;
 static std::vector<Object*> labeled_items;
 static unsigned int next_label_refresh = 0;
 static bool labels_on = false;
+static bool highlights_on = false;
 
 static inline int rgb5(int r, int g, int b)
 {
@@ -717,6 +718,30 @@ static void labels_clear()
     labeled_items.clear();
 }
 
+bool arpg_loot_highlights_visible()
+{
+    return highlights_on;
+}
+
+// Removes loot outlines from every item on the map. Walks the live object list
+// (never a cached pointer), so picked-up/destroyed items are safe.
+static void highlights_clear()
+{
+    Object** items = NULL;
+    int count = obj_create_list(-1, map_elevation, OBJ_TYPE_ITEM, &items);
+    for (int index = 0; index < count; index++) {
+        Object* item = items[index];
+        if ((item->outline & OUTLINE_TYPE_ARPG_LOOT) != 0) {
+            Rect rect;
+            obj_remove_outline(item, &rect);
+            tile_refresh_rect(&rect, item->elevation);
+        }
+    }
+    if (count > 0) {
+        obj_delete_list(items);
+    }
+}
+
 static int label_color(Object* item)
 {
     if (item->pid == PROTO_ID_MONEY) {
@@ -777,6 +802,17 @@ static void labels_refresh()
         }
 
         candidates.push_back(item);
+
+        // D2-style loot highlight: outline every item on screen in its tier colour.
+        if (highlights_on) {
+            int outline = OUTLINE_TYPE_ARPG_LOOT | (label_color(item) & 0xFF);
+            if (item->outline != outline) {
+                Rect rect;
+                if (obj_outline_object(item, outline, &rect) == 0) {
+                    tile_refresh_rect(&rect, item->elevation);
+                }
+            }
+        }
     }
 
     std::sort(candidates.begin(), candidates.end(), [](Object* a, Object* b) {
@@ -814,8 +850,18 @@ static void hud_update_labels(unsigned int now)
         if (labels_on) {
             labels_clear();
             labels_on = false;
+            if (highlights_on) {
+                highlights_on = false;
+                highlights_clear();
+            }
         }
         return;
+    }
+
+    if (!labels_on) {
+        bool highlight = true;
+        configGetBool(&game_config, "arpg", "loot_highlight", &highlight);
+        highlights_on = highlight;
     }
 
     // Drop labels of items that were picked up.
@@ -874,6 +920,7 @@ void arpg_hud_reset()
     hud_hidden = false;
     labels_clear();
     labels_on = false;
+    highlights_on = false;
     for (int index = 0; index < 4; index++) {
         last_values[index] = -1;
     }

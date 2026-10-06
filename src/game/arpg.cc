@@ -365,6 +365,7 @@ static int autotest_sweep = 0;
 static int autotest_die = 0;
 static bool autotest_shrines = false;
 static bool autotest_gallery = false;
+static bool autotest_loot = false;
 static bool autotest_swarm = false;
 static int autotest_magic = 0;
 static bool autotest_encounter = false;
@@ -706,6 +707,7 @@ void arpg_init()
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_die", &autotest_die);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_shrines", &autotest_shrines);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_gallery", &autotest_gallery);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_loot", &autotest_loot);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_swarm", &autotest_swarm);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_magic", &autotest_magic);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_encounter", &autotest_encounter);
@@ -728,7 +730,7 @@ void arpg_init()
 
     // Command-line test switches are merged into game_config, which CE saves
     // back to fallout.cfg on exit. Neutralize them so they don't stick.
-    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile", "autotest_sweep_encounters" };
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_loot", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile", "autotest_sweep_encounters" };
     for (const char* key : testKeys) {
         char* value;
         if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
@@ -4294,6 +4296,22 @@ void arpg_tick()
                     obj_move_to_tile(obj, tile, obj_dude->elevation, &rect);
                     tile_refresh_rect(&rect, obj_dude->elevation);
                     arpg_log("GALLERY %d: scenery %d at %d\n", index, candidates[index], tile);
+                }
+            }
+        }
+
+        // Loot highlight test: one drop of each tier next to the player.
+        static bool lootDone = false;
+        if (autotest_loot && !lootDone && now - autotest_start > 1500) {
+            lootDone = true;
+            // { pid, prefix, suffix }: normal, magic, rare, unique (Old Faithful), stimpak, caps.
+            static const int drops[][3] = { { 8, 0, 0 }, { 8, 1, 0 }, { 94, 2, 3 }, { 23, UNIQUE_MARKER, 6 }, { PROTO_ID_STIMPACK, 0, 0 }, { PROTO_ID_MONEY, 0, 0 } };
+            for (const auto& drop : drops) {
+                Object* item = arpg_drop_item(obj_dude, drop[0], drop[0] == PROTO_ID_MONEY ? 77 : 1);
+                if (item != NULL) {
+                    item->flags |= (drop[1] << ARPG_ITEM_PREFIX_SHIFT) & ARPG_ITEM_PREFIX_MASK;
+                    item->flags |= (drop[2] << ARPG_ITEM_SUFFIX_SHIFT) & ARPG_ITEM_SUFFIX_MASK;
+                    arpg_log("LOOT test: %s at %d quality %d\n", item_name(item), item->tile, arpg_item_quality(item));
                 }
             }
         }

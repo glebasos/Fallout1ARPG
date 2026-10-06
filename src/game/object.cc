@@ -2611,7 +2611,8 @@ int obj_outline_object(Object* obj, int outlineType, Rect* rect)
         return -1;
     }
 
-    if ((obj->outline & OUTLINE_TYPE_MASK) != 0) {
+    // ARPG loot highlights give way to Fallout's own outlines (mouse hover).
+    if ((obj->outline & OUTLINE_TYPE_MASK) != 0 && (obj->outline & OUTLINE_TYPE_ARPG_LOOT) == 0) {
         return -1;
     }
 
@@ -4384,6 +4385,10 @@ static int obj_adjust_light(Object* obj, int a2, Rect* rect)
 // 0x4801A0
 static void obj_render_outline(Object* object, Rect* rect)
 {
+    if ((object->outline & OUTLINE_TYPE_ARPG_LOOT) != 0 && !arpg_loot_highlights_visible()) {
+        return;
+    }
+
     CacheEntry* cacheEntry;
     Art* art = art_ptr_lock(object->fid, &cacheEntry);
     if (art == NULL) {
@@ -4459,7 +4464,16 @@ static void obj_render_outline(Object* object, Rect* rect)
         int v43;
         int v44;
 
+        if ((outlineType & OUTLINE_TYPE_ARPG_LOOT) != 0) {
+            outlineType = OUTLINE_TYPE_ARPG_LOOT;
+        }
+
         switch (outlineType) {
+        case OUTLINE_TYPE_ARPG_LOOT:
+            color = object->outline & 0xFF;
+            v53 = 0;
+            v44 = 0;
+            break;
         case OUTLINE_TYPE_HOSTILE:
             color = 243;
             v53 = 0;

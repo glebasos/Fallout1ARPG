@@ -103,6 +103,8 @@ typedef enum CritterFlags {
 } CritterFlags;
 
 #define OUTLINE_TYPE_MASK 0xFFFFFF
+// ARPG loot highlight; the low byte is the palette colour (arpg_hud.cc).
+#define OUTLINE_TYPE_ARPG_LOOT 0x800000
 #define OUTLINE_PALETTED 0x40000000
 #define OUTLINE_DISABLED 0x80000000
 

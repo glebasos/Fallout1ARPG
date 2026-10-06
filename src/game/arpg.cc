@@ -257,6 +257,8 @@ static int leash_distance = 30;
 static bool show_numbers = true;
 static bool always_run = true;
 static bool labels_always = false;
+// X: red outline around living enemies, so they stand out from corpses.
+static bool enemy_outline = true;
 static bool rmb_toggles_mode = false;
 static bool hold_to_move = true;
 static bool loot_drops = true;
@@ -557,6 +559,15 @@ bool arpg_labels_always()
     return labels_always;
 }
 
+bool arpg_enemy_outline(Object* obj)
+{
+    if (!arpg_on || !enemy_outline || obj == NULL || FID_TYPE(obj->fid) != OBJ_TYPE_CRITTER) {
+        return false;
+    }
+
+    return arpg_is_attackable(obj);
+}
+
 char* arpg_autotest_map()
 {
     return autotest_map[0] != '\0' ? autotest_map : NULL;
@@ -681,6 +692,7 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "hold_to_move", &hold_to_move);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "rmb_toggles_mode", &rmb_toggles_mode);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "labels_always", &labels_always);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "enemy_outline", &enemy_outline);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "loot_drops", &loot_drops);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "auto_caps", &auto_caps);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "respawn", &respawn_enabled);
@@ -6158,6 +6170,15 @@ bool arpg_handle_key(int key)
 
     if (key == KEY_CTRL_W) {
         arpg_cycle_controls();
+        return true;
+    }
+
+    if (key == KEY_LOWERCASE_X || key == KEY_UPPERCASE_X) {
+        enemy_outline = !enemy_outline;
+        configSetBool(&game_config, ARPG_CONFIG_SECTION, "enemy_outline", enemy_outline);
+        gsound_play_sfx_file("ib1p1xx1");
+        arpg_print(enemy_outline ? "Enemy outlines on." : "Enemy outlines off.");
+        tile_refresh_display();
         return true;
     }
 

@@ -869,6 +869,9 @@ void obj_render_pre_roof(Rect* rect, int elevation)
                         if ((objectListNode->obj->outline & OUTLINE_DISABLED) == 0 && outlineCount < 100) {
                             outlinedObjects[outlineCount++] = objectListNode->obj;
                         }
+                    } else if (outlineCount < 100 && arpg_enemy_outline(object)) {
+                        // ARPG enemy outline: drawn at render time only, never stored.
+                        outlinedObjects[outlineCount++] = objectListNode->obj;
                     }
                 }
             }
@@ -4409,6 +4412,12 @@ static void obj_render_outline(Object* object, Rect* rect)
         return;
     }
 
+    // Objects with no outline of their own are here for the ARPG enemy outline.
+    int outline = object->outline;
+    if ((outline & OUTLINE_TYPE_MASK) == 0) {
+        outline = OUTLINE_TYPE_ARPG_LOOT | colorTable[31744];
+    }
+
     CacheEntry* cacheEntry;
     Art* art = art_ptr_lock(object->fid, &cacheEntry);
     if (art == NULL) {
@@ -4479,8 +4488,8 @@ static void obj_render_outline(Object* object, Rect* rect)
         unsigned char color;
         unsigned char* v47 = NULL;
         unsigned char* v48 = NULL;
-        int v53 = object->outline & OUTLINE_PALETTED;
-        int outlineType = object->outline & OUTLINE_TYPE_MASK;
+        int v53 = outline & OUTLINE_PALETTED;
+        int outlineType = outline & OUTLINE_TYPE_MASK;
         int v43;
         int v44;
 
@@ -4490,7 +4499,7 @@ static void obj_render_outline(Object* object, Rect* rect)
 
         switch (outlineType) {
         case OUTLINE_TYPE_ARPG_LOOT:
-            color = object->outline & 0xFF;
+            color = outline & 0xFF;
             v53 = 0;
             v44 = 0;
             break;

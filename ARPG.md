@@ -33,6 +33,7 @@ loot labels are drawn in the map and scale with it.
 | **Z** | Toggle loot labels + highlights on/off permanently (Alt still shows them while held). Ground items get a D2-style outline in their tier colour (white normal, blue magic, yellow rare, gold unique, green drugs); `[arpg] loot_highlight=0` turns outlines off |
 | **W** | Weapon swap (switch active hand, like Diablo II's W; Fallout's B still works) |
 | **V** | Show/hide the minimap |
+| **X** | Toggle the red outline around living enemies (anything you can attack on a plain click), so they stand out from corpses. On by default; `[arpg] enemy_outline=0` starts with it off. Works in every control scheme |
 | Tab | Automap |
 | Crosshair mode (right-click empty ground) | Attack anyone, including neutrals |
 
@@ -133,7 +134,7 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
 ## Config (`[arpg]` in fallout.cfg)
 `enabled`, `controls` (poe/wasd/classic), `dodge_cost` (20), `always_run`, `hold_to_move`, `rmb_toggles_mode` (0), `rmb_toggles_mode` (0), `damage_numbers`, `globes`, `loot_drops`, `loot_pct`,
 `energy_regen_pct`, `enemy_attack_delay_pct` (130), `player_attack_delay_pct` (100), `stagger_pct`,
-`player_stagger_pct`, `stagger_immunity_ms`, `leash_distance`, `labels_always`, `loot_highlight` (1), `auto_caps`, `respawn` (1),
+`player_stagger_pct`, `stagger_immunity_ms`, `leash_distance`, `labels_always`, `loot_highlight` (1), `enemy_outline` (1), `auto_caps`, `respawn` (1),
 `respawn_caps_pct` (10).
 
 Animation speeds (percent): `attack_anim_pct` (200), `aim_anim_pct` (300), `enemy_attack_anim_pct` (150),

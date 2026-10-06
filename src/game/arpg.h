@@ -80,6 +80,8 @@ int arpg_buff_seconds(int index, const char** name);
 int arpg_shrine_state(Object* obj);
 bool arpg_is_hostile(Object* critter);
 bool arpg_is_attackable(Object* critter);
+// True when the X enemy outline should be drawn around this object (object.cc).
+bool arpg_enemy_outline(Object* obj);
 
 bool arpg_is_engaged(Object* critter);
 

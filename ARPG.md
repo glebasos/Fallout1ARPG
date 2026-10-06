@@ -66,7 +66,11 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
 - **HUD**: the monster under the cursor (or your target) is shown at the top with its name, modifiers and life;
   flask counts sit next to the LIFE globe; a gold XP bar runs along the top of the interface.
 - **Minimap** (top right, **V** toggles, `minimap=0` turns it off): walls, loot (white), monsters (red),
-  champions (blue), uniques (gold), party (green) and you (green cross).
+  champions (blue), uniques (gold), shrines (cyan), party (green) and you (green cross).
+- **Shrines**: monster levels have one or two glowing burning barrels. Walk up to one to use it: Refilling (full
+  life and energy), Armor (half damage taken, 96 s), Combat (double damage, 96 s), Energy (fast energy, 96 s),
+  Experience (+50% XP, 144 s), Purifying (no radiation or poison, 144 s) or Monster (the nearest monster becomes
+  a unique). Active boosts count down next to the ENERGY globe. `shrines=0` turns them off.
 - **Caps** are picked up just by walking past them.
 - **Death** works like Diablo II: a killing blow from a monster drops you for three seconds, then you rise again at
   the map entrance with full life, losing 10% of the caps you carry. Monsters forget you while you're down.
@@ -87,6 +91,7 @@ Animation speeds (percent): `attack_anim_pct` (200), `aim_anim_pct` (300), `enem
 
 Packs: `packs` (1), `pack_min` (2), `pack_max` (4), `pack_density_pct` (100), `champion_pct` (10),
 `unique_pct` (7), `pack_respawn_hours` (12), `max_spawns` per level (60), `aggro_radius` (9).
+HUD and extras: `minimap` (1), `shrines` (1), `shrine_scenery` (scenery proto number, 1 = Burning Metal Barrel).
 
 ## Test harness (developers)
 ```

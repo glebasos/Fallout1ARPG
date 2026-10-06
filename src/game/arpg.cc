@@ -198,6 +198,13 @@ static bool labels_always = false;
 static bool hold_to_move = true;
 static bool loot_drops = true;
 static bool auto_caps = true;
+
+// D2 death: a killing blow downs the player, who rises again at the map
+// entrance a few seconds later, poorer.
+static bool respawn_enabled = true;
+static int respawn_caps_pct = 10;
+static unsigned int death_until = 0;
+static int stat_deaths = 0;
 static int loot_pct = 100;
 static int energy_regen_pct = 100;
 
@@ -241,6 +248,8 @@ static bool dump_items = false;
 static bool autotest_iframes = false;
 static bool autotest_god = false;
 static int autotest_saveload = 0;
+static int autotest_sweep = 0;
+static int autotest_die = 0;
 
 static unsigned int next_hold_action = 0;
 static int hold_last_tile = -1;
@@ -400,6 +409,11 @@ bool arpg_autotest()
     return arpg_test;
 }
 
+bool arpg_autotest_sweeping()
+{
+    return arpg_test && autotest_sweep > 0;
+}
+
 bool arpg_is_spawned(Object* obj)
 {
     return obj != NULL && (obj->flags & ARPG_OBJECT_SPAWNED) != 0;
@@ -508,6 +522,8 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "labels_always", &labels_always);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "loot_drops", &loot_drops);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "auto_caps", &auto_caps);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "respawn", &respawn_enabled);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "respawn_caps_pct", &respawn_caps_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "loot_pct", &loot_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "energy_regen_pct", &energy_regen_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "dodge_cost", &dodge_cost);
@@ -531,6 +547,8 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_iframes", &autotest_iframes);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_god", &autotest_god);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_saveload", &autotest_saveload);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_sweep", &autotest_sweep);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_die", &autotest_die);
     // Autotest: hold a WASD direction (0=W 1=D 2=S 3=A) through the real
     // movement path.
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_wasd", &autotest_wasd);
@@ -548,7 +566,7 @@ void arpg_init()
 
     // Command-line test switches are merged into game_config, which CE saves
     // back to fallout.cfg on exit. Neutralize them so they don't stick.
-    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_iframes", "autotest_god", "autotest_saveload" };
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die" };
     for (const char* key : testKeys) {
         char* value;
         if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
@@ -647,6 +665,10 @@ void arpg_reset()
     arpg_reset_level();
     monsters.clear();
     populated_levels.clear();
+    if (death_until != 0) {
+        death_until = 0;
+        game_ui_enable();
+    }
     populate_pending = false;
     // Force the map-change path in arpg_tick, even for a reload of the same
     // map, so packs are spawned again.
@@ -1132,6 +1154,11 @@ static void arpg_populate_level()
         if (critter->data.critter.combat.team == obj_dude->data.critter.combat.team) {
             continue;
         }
+        // Boss monsters (the Boneyard's Mother Deathclaw) are one of a kind;
+        // clones wouldn't even count for their quests.
+        if (critter_kill_exps(critter) >= 1500) {
+            continue;
+        }
         seeds.push_back(critter);
     }
 
@@ -1155,15 +1182,24 @@ static void arpg_populate_level()
         int pack = next_pack_id++;
         arpg_make_monster(seed, RANK_NORMAL, 0, pack, NULL);
 
-        // Big monsters come in smaller groups (D2 MonStats MinGrp/MaxGrp).
+        // Big monsters come in smaller groups (D2 MonStats MinGrp/MaxGrp),
+        // whatever the pack's rank.
         int xp = critter_kill_exps(seed);
         int extra;
+        int championCount;
+        int minMinions;
         if (xp >= 500) {
             extra = roll_random(0, 1);
+            championCount = roll_random(1, 2);
+            minMinions = 0;
         } else if (xp >= 200) {
             extra = roll_random(1, 2);
+            championCount = 2;
+            minMinions = 1;
         } else {
             extra = roll_random(pack_min, std::max(pack_min, pack_max));
+            championCount = roll_random(2, 3);
+            minMinions = 2;
         }
         // Scale, rounding randomly (3 x 50% is 1 or 2, not always 1).
         int scaled = extra * pack_density_pct * levelPct;
@@ -1180,7 +1216,7 @@ static void arpg_populate_level()
                 uniques++;
                 arpg_make_monster(boss, RANK_UNIQUE, arpg_roll_affixes(xp >= 300 ? 3 : 2), pack, NULL);
                 monsters[seed].leader = boss;
-                int minions = std::max(2, extra);
+                int minions = std::max(minMinions, extra);
                 for (int index = 0; index < minions && spawned < budget; index++) {
                     Object* minion = arpg_spawn_clone(seed);
                     if (minion != NULL) {
@@ -1198,7 +1234,7 @@ static void arpg_populate_level()
             }
         } else if (roll <= uniqueChance + championChance) {
             unsigned int kind = champion_kinds[roll_random(0, (int)(sizeof(champion_kinds) / sizeof(*champion_kinds)) - 1)];
-            int count = roll_random(2, 3);
+            int count = championCount;
             for (int index = 0; index < count && spawned < budget; index++) {
                 Object* champion = arpg_spawn_clone(seed, false);
                 if (champion != NULL) {
@@ -1617,6 +1653,112 @@ static void arpg_react(Attack* attack, Object* victim, int damage, int flags, in
     register_end();
 }
 
+// D2 death. Called with the player's share of an attack after deaths were
+// decided: a killing blow becomes a knockdown leaving 1 HP and returns true
+// (the caller then calls arpg_dude_downed). While downed, nothing hurts.
+static bool arpg_spare_dude(int* damage, int* flags, int* knockback)
+{
+    if (!respawn_enabled) {
+        return false;
+    }
+
+    if (death_until != 0) {
+        *damage = 0;
+        *flags = 0;
+        *knockback = 0;
+        return false;
+    }
+
+    if ((*flags & (DAM_DEAD | DAM_KNOCKED_OUT)) == 0) {
+        return false;
+    }
+
+    *damage = std::max(0, critter_get_hits(obj_dude) - 1);
+    *flags = (*flags & ~(DAM_DEAD | DAM_KNOCKED_OUT)) | DAM_KNOCKED_DOWN;
+    return true;
+}
+
+// The player went down: monsters lose interest, input stops, and
+// arpg_respawn() runs when death_until passes.
+static void arpg_dude_downed(Object* killer)
+{
+    unsigned int now = get_time();
+    death_until = now + 3000;
+    stat_deaths++;
+
+    player_target = NULL;
+    player_chasing = false;
+    wasd_moving = false;
+
+    // At 1 HP the next poison tick would kill for real (Fallout's own death,
+    // game over), so the poison goes now.
+    int poison = critter_get_poison(obj_dude);
+    if (poison > 0) {
+        critter_adjust_poison(obj_dude, -poison);
+    }
+
+    for (int index = 0; index < crit_count; index++) {
+        Object* critter = crit_list[index];
+        if (critter != obj_dude && critter->data.critter.combat.whoHitMe == obj_dude) {
+            critter_set_who_hit_me(critter, NULL);
+            critter->data.critter.combat.maneuver &= ~CRITTER_MANEUVER_ENGAGING;
+        }
+    }
+    for (auto& entry : actors) {
+        if (entry.second.target == obj_dude) {
+            entry.second.target = NULL;
+        }
+    }
+
+    arpg_float_text(obj_dude, "You have died", colorTable[31744]);
+    arpg_print("You have died. You will rise again at the entrance.");
+    game_ui_disable(1);
+    arpg_log("ARPG: player downed by %s\n", killer != NULL && FID_TYPE(killer->fid) == OBJ_TYPE_CRITTER ? arpg_label(killer) : "?");
+}
+
+static void arpg_respawn()
+{
+    death_until = 0;
+
+    register_clear_force(obj_dude);
+    obj_dude->data.critter.combat.results &= ~(DAM_KNOCKED_DOWN | DAM_KNOCKED_OUT | DAM_DEAD);
+    dude_stand(obj_dude, obj_dude->rotation, -1);
+
+    int tile = map_data.enteringTile;
+    int elevation = map_data.enteringElevation;
+    if (tile > 0 && tile < HEX_GRID_SIZE && elevation >= 0 && elevation < ELEVATION_COUNT) {
+        Rect rect;
+        obj_move_to_tile(obj_dude, tile, elevation, &rect);
+        if (elevation != map_elevation) {
+            map_set_elevation(elevation);
+        }
+        obj_set_rotation(obj_dude, map_data.enteringRotation, NULL);
+    }
+    tile_set_center(obj_dude->tile, TILE_SET_CENTER_REFRESH_WINDOW);
+
+    critter_adjust_hits(obj_dude, stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS));
+    int poison = critter_get_poison(obj_dude);
+    if (poison > 0) {
+        critter_adjust_poison(obj_dude, -poison);
+    }
+    energy = arpg_energy_max();
+
+    int caps = item_caps_total(obj_dude);
+    int lost = caps * respawn_caps_pct / 100;
+    if (lost > 0) {
+        item_caps_adjust(obj_dude, -lost);
+    }
+
+    game_ui_enable();
+    intface_update_hit_points(false);
+    intface_update_items(false);
+
+    char text[128];
+    snprintf(text, sizeof(text), "You rise again. You lost %d caps.", lost);
+    arpg_print(text);
+    arpg_log("ARPG: player respawned at %d (lost %d caps)\n", obj_dude->tile, lost);
+}
+
 // Fire Enchanted death: Fallout's explosion art and sound, with damage to
 // the player and party next to the corpse. Not action_explode(): that one
 // disables the interface and kills outside our damage path.
@@ -1658,8 +1800,12 @@ static void arpg_death_explosion(Object* victim)
         blast.attackerFlags = DAM_HIT;
         blast.defenderDamage = roll_random(6, 14);
         death_checks(&blast);
+        bool downed = critter == obj_dude && arpg_spare_dude(&(blast.defenderDamage), &(blast.defenderFlags), &(blast.defenderKnockback));
         arpg_react(&blast, critter, blast.defenderDamage, blast.defenderFlags, 0);
         apply_damage(&blast, false);
+        if (downed) {
+            arpg_dude_downed(victim);
+        }
 
         char text[16];
         snprintf(text, sizeof(text), "%d", blast.defenderDamage);
@@ -1781,6 +1927,19 @@ static void arpg_resolve(ArpgAttack* aa)
         arpg_log("ARPG: dodged %s\n", critter_name(attacker));
     }
 
+    // D2 death: a killing blow on the player knocks them down instead; they
+    // rise again at the map entrance (arpg_respawn). A downed player takes
+    // no more damage.
+    bool dudeDowned = false;
+    if (hit && defender == obj_dude) {
+        dudeDowned |= arpg_spare_dude(&(attack->defenderDamage), &(attack->defenderFlags), &(attack->defenderKnockback));
+    }
+    for (int index = 0; index < attack->extrasLength; index++) {
+        if (attack->extras[index] == obj_dude) {
+            dudeDowned |= arpg_spare_dude(&(attack->extrasDamage[index]), &(attack->extrasFlags[index]), &(attack->extrasKnockback[index]));
+        }
+    }
+
     if (hit) {
         const char* sfx;
         if (aa->anim == ANIM_THROW_PUNCH || aa->anim == ANIM_KICK_LEG) {
@@ -1843,6 +2002,10 @@ static void arpg_resolve(ArpgAttack* aa)
     // Monster modifiers that trigger on a hit on the player.
     if (hit && defender == obj_dude && attack->defenderDamage > 0) {
         arpg_on_hit_effects(attacker, attack->defenderDamage);
+    }
+
+    if (dudeDowned) {
+        arpg_dude_downed(attacker);
     }
 
     for (size_t index = 0; index < victims.size(); index++) {
@@ -2745,6 +2908,96 @@ void arpg_tick()
             dump_screen();
         }
 
+        // Map sweep: visit every map (through real map transitions) and every
+        // non-empty elevation, reporting what the pack and aggro systems did.
+        static int sweepMap = 0;
+        static int sweepElevation = 0;
+        static unsigned int sweepNext = 0;
+        if (autotest_sweep > 0 && now - autotest_start > 2000 && now >= sweepNext) {
+            sweepNext = now + 7000;
+            if (sweepMap != 0) {
+                int monstersHere = 0;
+                int spawnedHere = 0;
+                int engagedMonsters = 0;
+                int engagedOthers = 0;
+                for (int index = 0; index < crit_count; index++) {
+                    Object* critter = crit_list[index];
+                    if (critter == obj_dude || !arpg_alive(critter)) {
+                        continue;
+                    }
+                    bool monster = arpg_is_monster_kind(critter);
+                    monstersHere += monster ? 1 : 0;
+                    spawnedHere += arpg_is_spawned(critter) ? 1 : 0;
+                    bool engaged = arpg_is_engaged(critter) || critter->data.critter.combat.whoHitMe == obj_dude;
+                    if (engaged && !isPartyMember(critter)) {
+                        if (monster) {
+                            engagedMonsters++;
+                        } else {
+                            engagedOthers++;
+                            arpg_log("SWEEP   engaged non-monster: %s pid=%d team=%d\n", critter_name(critter), critter->pid & 0xFFFFFF, critter->data.critter.combat.team);
+                        }
+                    }
+                }
+                char name[16];
+                map_get_name_idx(name, map_get_index_number());
+                arpg_log("SWEEP map %d %s elev %d: critters=%d monsters=%d spawned=%d engaged=%d engaged_others=%d hp=%d\n",
+                    map_get_index_number(), name, map_elevation, crit_count - 1, monstersHere, spawnedHere, engagedMonsters, engagedOthers, critter_get_hits(obj_dude));
+            }
+
+            // Next elevation of this map, if it has anything on it.
+            bool moved = false;
+            while (sweepMap != 0 && !moved && sweepElevation < ELEVATION_COUNT - 1) {
+                sweepElevation++;
+                if (map_is_elevation_empty(sweepElevation)) {
+                    continue;
+                }
+                for (Object* obj = obj_find_first_at(sweepElevation); obj != NULL && !moved; obj = obj_find_next_at()) {
+                    if (obj->tile == -1 || FID_TYPE(obj->fid) != OBJ_TYPE_CRITTER) {
+                        continue;
+                    }
+                    for (int rotation = 0; rotation < ROTATION_COUNT; rotation++) {
+                        int tile = tile_num_in_direction(obj->tile, rotation, 2);
+                        if (tile >= 0 && obj_blocking_at(NULL, tile, sweepElevation) == NULL) {
+                            register_clear(obj_dude);
+                            obj_move_to_tile(obj_dude, tile, sweepElevation, NULL);
+                            map_set_elevation(sweepElevation);
+                            tile_set_center(obj_dude->tile, TILE_SET_CENTER_REFRESH_WINDOW);
+                            arpg_log("SWEEP -> elevation %d\n", sweepElevation);
+                            moved = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (!moved) {
+                char name[16];
+                int next = sweepMap == 0 ? autotest_sweep : sweepMap + 1;
+                while (next < 200 && map_get_name_idx(name, next) == -1) {
+                    next++;
+                }
+                if (next >= 200) {
+                    arpg_log("SWEEP done\n");
+                    game_user_wants_to_quit = 2;
+                } else {
+                    sweepMap = next;
+                    sweepElevation = 0;
+                    MapTransition transition = { next, 0, -1, 0 };
+                    map_leave_map(&transition);
+                    arpg_log("SWEEP -> map %d %s\n", next, name);
+                }
+            }
+        }
+
+        // Respawn test: drop to 1 HP so the next monster hit is a killing blow.
+        static bool dieDone = false;
+        if (autotest_die > 0 && !dieDone && now - autotest_start > (unsigned int)autotest_die * 1000) {
+            dieDone = true;
+            critter_adjust_hits(obj_dude, -(critter_get_hits(obj_dude) - 1));
+            intface_update_hit_points(false);
+            arpg_log("ARPG autotest: player at 1 HP, caps %d\n", item_caps_total(obj_dude));
+        }
+
         // Save mid-fight with packs alive, one clone knocked out so a queue
         // event is owned by an unsaved object, then load the save back.
         static int saveLoadPhase = 0;
@@ -2955,7 +3208,7 @@ void arpg_tick()
     if (autoplay) {
         // Test bot drinks a "potion" (Q) at low life.
         static unsigned int nextHeal = 0;
-        if (now >= nextHeal && critter_get_hits(obj_dude) * 100 < stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS) * 40) {
+        if (autotest_die == 0 && now >= nextHeal && critter_get_hits(obj_dude) * 100 < stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS) * 40) {
             nextHeal = now + 2000;
             int before = critter_get_hits(obj_dude);
             arpg_quick_heal();
@@ -3036,9 +3289,16 @@ void arpg_tick()
         }
     }
 
+    if (death_until != 0 && now >= death_until) {
+        arpg_respawn();
+    }
+    bool downed = death_until != 0;
+
     // The player gets up after a knockdown, like critters do. Vanilla handles
     // this at the start of a combat turn, which never comes in real time.
-    if ((obj_dude->data.critter.combat.results & DAM_KNOCKED_DOWN) != 0
+    if (downed) {
+        dude_knockdown_time = 0;
+    } else if ((obj_dude->data.critter.combat.results & DAM_KNOCKED_DOWN) != 0
         && (obj_dude->data.critter.combat.results & (DAM_KNOCKED_OUT | DAM_DEAD)) == 0) {
         if (dude_knockdown_time == 0) {
             dude_knockdown_time = now;
@@ -3053,10 +3313,12 @@ void arpg_tick()
     }
 
     arpg_energy_tick(now);
-    arpg_caps_tick(now);
-    arpg_wasd_tick(now);
-    arpg_hold_tick(now);
-    arpg_player_tick(now);
+    if (!downed) {
+        arpg_caps_tick(now);
+        arpg_wasd_tick(now);
+        arpg_hold_tick(now);
+        arpg_player_tick(now);
+    }
     arpg_hud_tick(now);
 
     if ((obj_dude->data.critter.combat.results & DAM_KNOCKED_OUT) != 0
@@ -3067,7 +3329,9 @@ void arpg_tick()
         arpg_log("ARPG: player knockout downgraded to knockdown\n");
     }
 
-    arpg_aggro_tick(now);
+    if (!downed) {
+        arpg_aggro_tick(now);
+    }
 
     bool alert = now < alert_until;
     bool joinCheck = alert && now >= next_join_check;

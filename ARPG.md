@@ -64,6 +64,10 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
 - **HUD**: the monster under the cursor (or your target) is shown at the top with its name, modifiers and life;
   flask counts sit next to the LIFE globe; a gold XP bar runs along the top of the interface.
 - **Caps** are picked up just by walking past them.
+- **Death** works like Diablo II: a killing blow from a monster drops you for three seconds, then you rise again at
+  the map entrance with full life, losing 10% of the caps you carry. Monsters forget you while you're down.
+  (Deaths outside combat, such as poison or scripted deaths, still end the game.) Set `respawn=0` for
+  Fallout's permadeath.
 - Hit recovery like Diablo: only big hits (≥8% max HP for monsters, ≥15% for you), crits and knockdowns stagger, with a 2 s immunity.
 - LIFE and ENERGY globes sit in the hi-res side areas (needs width ≥ 840, e.g. 1024x768 via `f1_res.ini`).
 - Kills drop caps, stimpaks, ammo for your weapon and gear scaled by the monster's XP. XP is awarded on kill.
@@ -71,7 +75,8 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
 ## Config (`[arpg]` in fallout.cfg)
 `enabled`, `controls` (poe/wasd/classic), `dodge_cost` (20), `always_run`, `hold_to_move`, `damage_numbers`, `globes`, `loot_drops`, `loot_pct`,
 `energy_regen_pct`, `enemy_attack_delay_pct` (130), `player_attack_delay_pct` (100), `stagger_pct`,
-`player_stagger_pct`, `stagger_immunity_ms`, `leash_distance`, `labels_always`, `auto_caps`.
+`player_stagger_pct`, `stagger_immunity_ms`, `leash_distance`, `labels_always`, `auto_caps`, `respawn` (1),
+`respawn_caps_pct` (10).
 
 Animation speeds (percent): `attack_anim_pct` (200), `aim_anim_pct` (300), `enemy_attack_anim_pct` (150),
 `reaction_anim_pct` (160), `run_speed_pct` (120), `enemy_run_speed_pct` (115), `projectile_speed_pct` (150).
@@ -85,6 +90,8 @@ fallout-arpg.exe [arpg]autotest=1 [arpg]autoplay=1 [arpg]autotest_seconds=90 [ar
                  [arpg]autotest_map=CAVES.MAP [arpg]autotest_weapon=23 [arpg]autotest_ammo=35
                  [arpg]autotest_armor=17 [arpg]autotest_xp=30000
 ```
+`[arpg]autotest_sweep=1` walks every map from index 1 through real map transitions (and every non-empty
+elevation), logging `SWEEP` lines with monster/pack/engagement counts; combine with `autoplay=0`.
 `[arpg]autotest_god=1` keeps the bot above half life, `[arpg]autotest_saveload=N` saves to slot 10 after N
 seconds (with a knocked-out pack monster) and loads it back 3 s later.
 `[arpg]autotest_iframes=1` keeps dodge i-frames on. `[arpg]autotest_wasd=0..3` holds W/D/S/A (3 s on, 1 s off) through the real WASD movement path;

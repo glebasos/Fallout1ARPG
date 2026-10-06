@@ -92,6 +92,8 @@ void arpg_quick_reload();
 // Test harness: `[arpg]autotest=1` skips menus and starts a new game with the
 // combat premade character.
 bool arpg_autotest();
+// True while the autotest map sweep runs (dialogues are skipped).
+bool arpg_autotest_sweeping();
 void arpg_install_crash_handler();
 char* arpg_autotest_map();
 void arpg_debug_warp_to_enemy();

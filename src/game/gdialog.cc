@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "game/actions.h"
+#include "game/arpg.h"
 #include "game/combat.h"
 #include "game/combatai.h"
 #include "game/critter.h"
@@ -597,6 +598,11 @@ void gdialog_enter(Object* target, int a2)
     gdDialogWentOff = false;
 
     if (isInCombat()) {
+        return;
+    }
+
+    // ARPG autotest map sweep: modal dialogues would stall the sweep.
+    if (arpg_autotest_sweeping()) {
         return;
     }
 

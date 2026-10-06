@@ -168,6 +168,10 @@ static std::unordered_map<int, int> populated_hour;
 // Levels already populated since the map was last loaded.
 static std::vector<int> populated_levels;
 static bool populate_pending = false;
+// The map being loaded is a random encounter / wilderness map (no respawn
+// timer), and the map index that applies to.
+static bool random_map_pending = false;
+static int random_map_index = -1;
 static unsigned int populate_time = 0;
 static unsigned int next_aggro_check = 0;
 
@@ -1136,7 +1140,8 @@ static void arpg_populate_level()
     // last spawned here (loading an older save always respawns).
     int hour = (int)(game_time() / 36000);
     auto last = populated_hour.find(key);
-    if (last != populated_hour.end() && hour >= last->second && hour - last->second < pack_respawn_hours) {
+    bool fresh = map_get_index_number() == random_map_index;
+    if (!fresh && last != populated_hour.end() && hour >= last->second && hour - last->second < pack_respawn_hours) {
         arpg_log("ARPG: packs on level %d spawned %d h ago, not respawning\n", key, hour - last->second);
         return;
     }
@@ -1260,6 +1265,11 @@ static void arpg_populate_level()
     if (spawned > 0) {
         arpg_refresh_list();
     }
+}
+
+void arpg_note_random_map()
+{
+    random_map_pending = true;
 }
 
 void arpg_on_game_load()
@@ -2827,6 +2837,10 @@ void arpg_tick()
 
     int mapIndex = map_get_index_number();
     if (mapIndex != last_map || map_elevation != last_elevation) {
+        if (mapIndex != last_map) {
+            random_map_index = random_map_pending ? mapIndex : -1;
+            random_map_pending = false;
+        }
         arpg_reset_level();
         last_map = mapIndex;
         last_elevation = map_elevation;

@@ -81,6 +81,10 @@ bool arpg_monster_info(Object* critter, int* rank, char* name, int nameSize, cha
 // A saved game is being loaded (packs aren't saved, so they respawn).
 void arpg_on_game_load();
 
+// The world map is loading a random encounter or wilderness map: those are
+// fresh every time, so the next map's packs ignore the respawn timer.
+void arpg_note_random_map();
+
 // Autotest save/load without the UI (loadsave.cc).
 int arpg_ls_save_slot(int slot, const char* description);
 int arpg_ls_load_slot(int slot);

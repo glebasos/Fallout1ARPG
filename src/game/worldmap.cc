@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "game/anim.h"
+#include "game/arpg.h"
 #include "game/art.h"
 #include "game/bmpdlog.h"
 #include "game/combat.h"
@@ -2116,6 +2117,8 @@ int world_map(WorldMapContext ctx)
 
             win_disable_button(WrldToggle);
 
+            // ARPG: a fresh wilderness map, packs always spawn.
+            arpg_note_random_map();
             if (LoadTownMap(RandEnctNames[terrain][map_index], 1) == -1) {
                 return -1;
             }
@@ -2131,6 +2134,7 @@ int world_map(WorldMapContext ctx)
 
                 win_disable_button(WrldToggle);
 
+                arpg_note_random_map();
                 if (LoadTownMap(spcl_map_name[special_enc_num - 1], 0) == -1) {
                     return -1;
                 }
@@ -2155,6 +2159,7 @@ int world_map(WorldMapContext ctx)
 
                 win_disable_button(WrldToggle);
 
+                arpg_note_random_map();
                 if (LoadTownMap(RandEnctNames[terrain][map_index], 2) == -1) {
                     return -1;
                 }

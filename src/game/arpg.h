@@ -55,6 +55,14 @@ int arpg_energy_max();
 // HUD (arpg_hud.cc): HP / energy globes and Alt item labels.
 void arpg_hud_tick(unsigned int now);
 void arpg_hud_reset();
+void arpg_hud_toggle_minimap();
+
+// Shrine boosts for the HUD: seconds left on boost `index` (0 when inactive,
+// -1 past the end) and its short name.
+#define ARPG_BUFF_COUNT 7
+int arpg_buff_seconds(int index, const char** name);
+// -1 not a shrine, 0 used shrine, 1 unused shrine.
+int arpg_shrine_state(Object* obj);
 bool arpg_is_hostile(Object* critter);
 bool arpg_is_attackable(Object* critter);
 

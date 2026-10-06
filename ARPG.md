@@ -27,6 +27,7 @@ game to cycle them.
 | **Space** | Dodge roll toward the cursor, with 0.6 s of invulnerability (20 Energy) |
 | **Z** | Toggle loot labels on/off (Alt still shows them while held) |
 | **W** | Weapon swap (switch active hand, like Diablo II's W; Fallout's B still works) |
+| **V** | Show/hide the minimap |
 | Tab | Automap |
 | Crosshair mode (right-click empty ground) | Attack anyone, including neutrals |
 
@@ -64,6 +65,8 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
   5x XP, four loot picks and always a piece of gear.
 - **HUD**: the monster under the cursor (or your target) is shown at the top with its name, modifiers and life;
   flask counts sit next to the LIFE globe; a gold XP bar runs along the top of the interface.
+- **Minimap** (top right, **V** toggles, `minimap=0` turns it off): walls, loot (white), monsters (red),
+  champions (blue), uniques (gold), party (green) and you (green cross).
 - **Caps** are picked up just by walking past them.
 - **Death** works like Diablo II: a killing blow from a monster drops you for three seconds, then you rise again at
   the map entrance with full life, losing 10% of the caps you carry. Monsters forget you while you're down.

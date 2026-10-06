@@ -186,6 +186,47 @@ static int max_spawns = 60;
 static int aggro_radius = 9;
 static int stat_spawned = 0;
 
+// Shrines (D2 Shrines.txt: boosters last 96 or 144 s).
+enum {
+    SHRINE_REFILL,
+    SHRINE_ARMOR,
+    SHRINE_COMBAT,
+    SHRINE_ENERGY,
+    SHRINE_EXPERIENCE,
+    SHRINE_PURIFY,
+    SHRINE_MONSTER,
+    SHRINE_COUNT,
+};
+
+static const struct {
+    const char* name;
+    const char* hud;
+    int seconds;
+} shrine_info[SHRINE_COUNT] = {
+    { "Refilling Shrine", "", 0 },
+    { "Armor Shrine", "Armor", 96 },
+    { "Combat Shrine", "Combat", 96 },
+    { "Energy Shrine", "Energy", 96 },
+    { "Experience Shrine", "XP", 144 },
+    { "Purifying Shrine", "Purity", 144 },
+    { "Monster Shrine", "", 0 },
+};
+
+typedef struct ArpgShrine {
+    Object* obj;
+    int kind;
+    bool used;
+    bool announced;
+} ArpgShrine;
+
+static std::vector<ArpgShrine> shrines;
+static unsigned int buff_until[SHRINE_COUNT];
+static bool shrines_enabled = true;
+static int shrine_pid = -1;
+
+static bool arpg_buff(int kind);
+static void arpg_spawn_shrines(const std::vector<Object*>& seeds);
+
 static bool arpg_on = false;
 static bool arpg_test = false;
 static int enemy_delay_pct = 130;
@@ -228,6 +269,7 @@ static int stat_shots_while_wasd = 0;
 static unsigned int stat_latency_total = 0;
 static int stat_latency_count = 0;
 static int stat_unfired = 0;
+static int stat_move_fail = 0;
 
 // Energy (the blue globe) fuels special attacks.
 static double energy = -1.0;
@@ -254,6 +296,9 @@ static bool autotest_god = false;
 static int autotest_saveload = 0;
 static int autotest_sweep = 0;
 static int autotest_die = 0;
+static bool autotest_shrines = false;
+static bool autotest_gallery = false;
+static bool autotest_swarm = false;
 
 static unsigned int next_hold_action = 0;
 static int hold_last_tile = -1;
@@ -539,6 +584,12 @@ void arpg_init()
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "enemy_run_speed_pct", &enemy_run_speed_pct);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "projectile_speed_pct", &projectile_speed_pct);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "packs", &packs_enabled);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "shrines", &shrines_enabled);
+    // Shrines are drawn with a scenery proto: a Burning Metal Barrel by
+    // default (the Altars are huge multi-hex Cathedral pieces).
+    int shrineScenery = 1;
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "shrine_scenery", &shrineScenery);
+    shrine_pid = (OBJ_TYPE_SCENERY << 24) | shrineScenery;
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "pack_min", &pack_min);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "pack_max", &pack_max);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "pack_density_pct", &pack_density_pct);
@@ -553,6 +604,9 @@ void arpg_init()
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_saveload", &autotest_saveload);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_sweep", &autotest_sweep);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_die", &autotest_die);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_shrines", &autotest_shrines);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_gallery", &autotest_gallery);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_swarm", &autotest_swarm);
     // Autotest: hold a WASD direction (0=W 1=D 2=S 3=A) through the real
     // movement path.
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_wasd", &autotest_wasd);
@@ -570,7 +624,7 @@ void arpg_init()
 
     // Command-line test switches are merged into game_config, which CE saves
     // back to fallout.cfg on exit. Neutralize them so they don't stick.
-    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die" };
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_swarm" };
     for (const char* key : testKeys) {
         char* value;
         if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
@@ -668,6 +722,7 @@ void arpg_reset()
 
     arpg_reset_level();
     monsters.clear();
+    shrines.clear();
     populated_levels.clear();
     if (death_until != 0) {
         death_until = 0;
@@ -1262,6 +1317,8 @@ static void arpg_populate_level()
     arpg_log("ARPG: populated level %d: %d seeds, %d spawned (%d champions, %d uniques)\n",
         key, (int)seeds.size(), spawned, champions, uniques);
 
+    arpg_spawn_shrines(seeds);
+
     if (spawned > 0) {
         arpg_refresh_list();
     }
@@ -1347,6 +1404,163 @@ static void arpg_aggro_tick(unsigned int now)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Shrines (D2): glowing landmarks on monster levels; walk up to one for a
+// refill, a timed boost, or a nasty surprise.
+// ---------------------------------------------------------------------------
+
+static bool arpg_buff(int kind)
+{
+    return buff_until[kind] != 0 && get_time() < buff_until[kind];
+}
+
+int arpg_buff_seconds(int index, const char** name)
+{
+    if (index < 0 || index >= SHRINE_COUNT) {
+        return -1;
+    }
+    *name = shrine_info[index].hud;
+    unsigned int now = get_time();
+    if (buff_until[index] == 0 || now >= buff_until[index]) {
+        return 0;
+    }
+    return (int)((buff_until[index] - now + 999) / 1000);
+}
+
+int arpg_shrine_state(Object* obj)
+{
+    for (const ArpgShrine& shrine : shrines) {
+        if (shrine.obj == obj) {
+            return shrine.used ? 0 : 1;
+        }
+    }
+    return -1;
+}
+
+static void arpg_spawn_shrines(const std::vector<Object*>& seeds)
+{
+    if (!shrines_enabled || seeds.empty() || shrine_pid == -1) {
+        return;
+    }
+
+    int count = seeds.size() >= 8 ? 2 : 1;
+    for (int n = 0; n < count; n++) {
+        Object* seed = seeds[roll_random(0, (int)seeds.size() - 1)];
+        int tile = arpg_pack_tile(seed);
+        if (tile == -1) {
+            continue;
+        }
+
+        Object* obj;
+        if (obj_pid_new(&obj, shrine_pid) != 0) {
+            continue;
+        }
+        obj->flags |= OBJECT_NO_SAVE | ARPG_OBJECT_SPAWNED;
+        Rect rect;
+        obj_move_to_tile(obj, tile, seed->elevation, &rect);
+        tile_refresh_rect(&rect, seed->elevation);
+        obj_set_light(obj, 4, 65536, &rect);
+        tile_refresh_rect(&rect, seed->elevation);
+
+        int kind = roll_random(0, SHRINE_COUNT - 1);
+        shrines.push_back({ obj, kind, false, false });
+        arpg_log("ARPG: %s at %d\n", shrine_info[kind].name, tile);
+    }
+}
+
+static void arpg_use_shrine(ArpgShrine& shrine, unsigned int now)
+{
+    shrine.used = true;
+    Rect rect;
+    obj_set_light(shrine.obj, 1, 16384, &rect);
+    tile_refresh_rect(&rect, shrine.obj->elevation);
+
+    char text[128];
+    switch (shrine.kind) {
+    case SHRINE_REFILL:
+        critter_adjust_hits(obj_dude, stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS));
+        energy = arpg_energy_max();
+        intface_update_hit_points(true);
+        snprintf(text, sizeof(text), "%s: life and energy restored.", shrine_info[shrine.kind].name);
+        break;
+    case SHRINE_MONSTER: {
+        // The nearest wild monster becomes a unique.
+        Object* best = NULL;
+        for (int index = 0; index < crit_count; index++) {
+            Object* critter = crit_list[index];
+            ArpgMonster* monster = arpg_monster(critter);
+            if (!arpg_alive(critter) || !arpg_is_monster_kind(critter) || (monster != NULL && monster->rank == RANK_UNIQUE)) {
+                continue;
+            }
+            if (best == NULL || obj_dist(critter, obj_dude) < obj_dist(best, obj_dude)) {
+                best = critter;
+            }
+        }
+        if (best != NULL && obj_dist(best, obj_dude) <= 25) {
+            ArpgMonster* old = arpg_monster(best);
+            int pack = old != NULL ? old->pack : next_pack_id++;
+            arpg_make_monster(best, RANK_UNIQUE, arpg_roll_affixes(2), pack, NULL);
+            ArpgMonster* monster = arpg_monster(best);
+            arpg_float_text(best, monster->name, colorTable[32256]);
+            snprintf(text, sizeof(text), "%s: %s awakens.", shrine_info[shrine.kind].name, monster->name);
+        } else {
+            snprintf(text, sizeof(text), "%s: nothing stirs.", shrine_info[shrine.kind].name);
+        }
+        break;
+    }
+    default:
+        buff_until[shrine.kind] = now + shrine_info[shrine.kind].seconds * 1000;
+        if (shrine.kind == SHRINE_PURIFY) {
+            critter_adjust_rads(obj_dude, -critter_get_rads(obj_dude));
+            critter_adjust_poison(obj_dude, -critter_get_poison(obj_dude));
+        }
+        static const char* effects[SHRINE_COUNT] = { "", "half damage taken", "double damage", "fast energy",
+            "+50% experience", "no radiation or poison", "" };
+        snprintf(text, sizeof(text), "%s: %s for %d seconds.", shrine_info[shrine.kind].name, effects[shrine.kind], shrine_info[shrine.kind].seconds);
+        break;
+    }
+
+    arpg_float_text(obj_dude, shrine_info[shrine.kind].name, colorTable[992]);
+    arpg_print(text);
+    gsound_play_sfx_file("ib1p1xx1");
+    arpg_log("ARPG: used %s\n", shrine_info[shrine.kind].name);
+}
+
+static void arpg_shrine_tick(unsigned int now)
+{
+    static unsigned int next = 0;
+    if (now < next) {
+        return;
+    }
+    next = now + 200;
+
+    for (ArpgShrine& shrine : shrines) {
+        if (shrine.used || shrine.obj->tile == -1 || shrine.obj->elevation != obj_dude->elevation) {
+            continue;
+        }
+        int dist = tile_dist(shrine.obj->tile, obj_dude->tile);
+        if (!shrine.announced && dist <= 8) {
+            // D2 shows a shrine's name when you notice it.
+            shrine.announced = true;
+            arpg_float_text(shrine.obj, shrine_info[shrine.kind].name, colorTable[992]);
+        }
+        if (dist <= 1) {
+            arpg_use_shrine(shrine, now);
+        }
+    }
+
+    if (arpg_buff(SHRINE_PURIFY)) {
+        int rads = critter_get_rads(obj_dude);
+        if (rads > 0) {
+            critter_adjust_rads(obj_dude, -rads);
+        }
+        int poison = critter_get_poison(obj_dude);
+        if (poison > 0) {
+            critter_adjust_poison(obj_dude, -poison);
+        }
+    }
+}
+
 // Pack leader aura (D2 Might): pack members near a living Pack Leader hit
 // harder.
 static int arpg_aura_pct(Object* critter)
@@ -1377,6 +1591,13 @@ static void arpg_scale_damage(Attack* attack)
         double value = *damage * (100 + bonus) / 100.0;
         if (fire) {
             value += roll_random(2, 6);
+        }
+        // Shrine boosts.
+        if (attack->attacker == obj_dude && arpg_buff(SHRINE_COMBAT)) {
+            value *= 2.0;
+        }
+        if (victim == obj_dude && arpg_buff(SHRINE_ARMOR)) {
+            value *= 0.5;
         }
         ArpgMonster* defender = arpg_monster(victim);
         if (defender != NULL) {
@@ -1884,6 +2105,13 @@ static void arpg_on_kill(Object* victim, Object* killer)
         }
     }
 
+    if (byPlayer && arpg_buff(SHRINE_EXPERIENCE)) {
+        int bonus = critter_kill_exps(victim) / 2;
+        if (bonus > 0) {
+            combat_give_exps(bonus);
+        }
+    }
+
     if (byPlayer && !isPartyMember(victim)) {
         arpg_drop_loot(victim, rolls, gear);
     }
@@ -2133,6 +2361,9 @@ static void arpg_energy_tick(unsigned int now)
     if (last_energy_tick != 0 && now > last_energy_tick) {
         // Regenerate max AP points per second (x energy_regen_pct).
         double perSecond = stat_level(obj_dude, STAT_MAXIMUM_ACTION_POINTS) * energy_regen_pct / 100.0;
+        if (arpg_buff(SHRINE_ENERGY)) {
+            perSecond *= 5.0;
+        }
         energy += perSecond * (now - last_energy_tick) / 1000.0;
     }
     last_energy_tick = now;
@@ -2219,8 +2450,12 @@ static void arpg_move_towards(Object* mover, Object* target)
     register_clear(mover);
     if (register_begin(ANIMATION_REQUEST_RESERVED) == 0) {
         if (register_object_run_to_object(mover, target, -1, 0) == 0) {
-            register_end();
+            if (register_end() == -1) {
+                stat_move_fail++;
+            }
         }
+    } else {
+        stat_move_fail++;
     }
 }
 
@@ -2885,6 +3120,13 @@ void arpg_tick()
                         arpg_log("ITEM %d type=%d cost=%d name=%s\n", pid, proto->item.type, proto->item.cost, proto_name(pid));
                     }
                 }
+                for (int index = 1; index < 2000; index++) {
+                    int pid = (OBJ_TYPE_SCENERY << 24) | index;
+                    Proto* proto;
+                    if (proto_ptr(pid, &proto) != -1 && proto->fid != -1) {
+                        arpg_log("SCENERY %d type=%d art=%d light=%d name=%s\n", index, proto->scenery.type, proto->fid & 0xFFF, proto->lightDistance, proto_name(pid));
+                    }
+                }
                 for (int index = 1; index < 400; index++) {
                     int pid = (OBJ_TYPE_CRITTER << 24) | index;
                     Proto* proto;
@@ -2929,6 +3171,13 @@ void arpg_tick()
         static unsigned int sweepNext = 0;
         if (autotest_sweep > 0 && now - autotest_start > 2000 && now >= sweepNext) {
             sweepNext = now + 7000;
+            // The Glow's radiation would end the sweep with a vanilla death.
+            int rads = critter_get_rads(obj_dude);
+            if (rads > 0) {
+                critter_adjust_rads(obj_dude, -rads);
+            }
+            // Queued radiation-sickness events carry their own (fatal) level.
+            queue_remove_this(obj_dude, EVENT_TYPE_RADIATION);
             if (sweepMap != 0) {
                 int monstersHere = 0;
                 int spawnedHere = 0;
@@ -3000,6 +3249,65 @@ void arpg_tick()
                     map_leave_map(&transition);
                     arpg_log("SWEEP -> map %d %s\n", next, name);
                 }
+            }
+        }
+
+        // Stress test: every monster on the level comes for the player.
+        static bool swarmDone = false;
+        if (autotest_swarm && !swarmDone && now - autotest_start > 6000) {
+            swarmDone = true;
+            int count = 0;
+            for (int index = 0; index < crit_count; index++) {
+                Object* critter = crit_list[index];
+                if (critter != obj_dude && arpg_alive(critter) && arpg_is_monster_kind(critter)) {
+                    critter_set_who_hit_me(critter, obj_dude);
+                    critter->data.critter.combat.maneuver |= CRITTER_MANEUVER_ENGAGING;
+                    count++;
+                }
+            }
+            alert_until = now + 10000;
+            arpg_log("ARPG autotest: swarm of %d\n", count);
+        }
+
+        // Scenery gallery: candidate shrine looks in a row next to the player.
+        static bool galleryDone = false;
+        if (autotest_gallery && !galleryDone && now - autotest_start > 1500) {
+            galleryDone = true;
+            static const int candidates[] = { 1, 198, 484, 505, 506, 507, 508, 522, 523, 524, 194 };
+            int tile = obj_dude->tile;
+            for (int index = 0; index < (int)(sizeof(candidates) / sizeof(*candidates)); index++) {
+                tile = tile_num_in_direction(tile_num_in_direction(tile, 2, 1), 1, 1);
+                Object* obj;
+                if (obj_pid_new(&obj, (OBJ_TYPE_SCENERY << 24) | candidates[index]) == 0) {
+                    obj->flags |= OBJECT_NO_SAVE;
+                    Rect rect;
+                    obj_move_to_tile(obj, tile, obj_dude->elevation, &rect);
+                    tile_refresh_rect(&rect, obj_dude->elevation);
+                    arpg_log("GALLERY %d: scenery %d at %d\n", index, candidates[index], tile);
+                }
+            }
+        }
+
+        // Shrine test: every 12 s, step next to the next unused shrine.
+        static unsigned int nextShrineVisit = 0;
+        if (autotest_shrines && now - autotest_start > 8000 && now >= nextShrineVisit) {
+            nextShrineVisit = now + 12000;
+            for (ArpgShrine& shrine : shrines) {
+                if (shrine.used || shrine.obj->tile == -1 || shrine.obj->elevation != obj_dude->elevation) {
+                    continue;
+                }
+                for (int rotation = 0; rotation < ROTATION_COUNT; rotation++) {
+                    int tile = tile_num_in_direction(shrine.obj->tile, rotation, 1);
+                    if (obj_blocking_at(obj_dude, tile, shrine.obj->elevation) == NULL) {
+                        register_clear(obj_dude);
+                        Rect rect;
+                        obj_move_to_tile(obj_dude, tile, shrine.obj->elevation, &rect);
+                        tile_set_center(tile, TILE_SET_CENTER_REFRESH_WINDOW);
+                        arpg_log("ARPG autotest: visiting %s\n", shrine_info[shrine.kind].name);
+                        break;
+                    }
+                }
+                break;
             }
         }
 
@@ -3111,7 +3419,7 @@ void arpg_tick()
         }
 
         if (autotest_seconds > 0 && now - autotest_start > (unsigned int)autotest_seconds * 1000) {
-            arpg_log("ARPG autotest done: unfired=%d spawned=%d\n", stat_unfired, stat_spawned);
+            arpg_log("ARPG autotest done: unfired=%d spawned=%d move_fail=%d deaths=%d\n", stat_unfired, stat_spawned, stat_move_fail, stat_deaths);
             arpg_log("ARPG autotest done: dude hp=%d/%d xp=%d attacks=%d failed=%d react_blocked=%d kills=%d wasd_shots=%d latency_ms=%d\n",
                 critter_get_hits(obj_dude),
                 stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS),
@@ -3329,6 +3637,7 @@ void arpg_tick()
     arpg_energy_tick(now);
     if (!downed) {
         arpg_caps_tick(now);
+        arpg_shrine_tick(now);
         arpg_wasd_tick(now);
         arpg_hold_tick(now);
         arpg_player_tick(now);
@@ -3920,6 +4229,11 @@ bool arpg_handle_key(int key)
         return true;
     case KEY_SPACE:
         arpg_dodge();
+        return true;
+    case KEY_LOWERCASE_V:
+    case KEY_UPPERCASE_V:
+        arpg_hud_toggle_minimap();
+        gsound_play_sfx_file("ib1p1xx1");
         return true;
     }
 

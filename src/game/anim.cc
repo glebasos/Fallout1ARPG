@@ -36,9 +36,12 @@
 
 namespace fallout {
 
-#define ANIMATION_SEQUENCE_LIST_CAPACITY 21
+// ARPG: vanilla has 21 sequences and 16 animating objects, enough for a
+// turn-based fight. Real-time packs keep dozens of monsters running and
+// attacking at once.
+#define ANIMATION_SEQUENCE_LIST_CAPACITY 96
 #define ANIMATION_DESCRIPTION_LIST_CAPACITY 40
-#define ANIMATION_SAD_LIST_CAPACITY 16
+#define ANIMATION_SAD_LIST_CAPACITY 96
 
 #define ANIMATION_SEQUENCE_FORCED 0x01
 

@@ -17,6 +17,7 @@
 #include "game/item.h"
 #include "game/map.h"
 #include "game/object.h"
+#include "game/party.h"
 #include "game/proto.h"
 #include "game/stat.h"
 #include "game/textobj.h"
@@ -285,10 +286,206 @@ static void hud_update_globes()
         win_draw(globe_windows[0]);
     }
 
-    if (en != last_values[2] || maxEn != last_values[3]) {
+    // Active shrine boosts, D2 state icons style, left of the energy globe.
+    char buffs[ARPG_BUFF_COUNT][24];
+    int buffCount = 0;
+    unsigned int buffSignature = 0;
+    for (int index = 0; index < ARPG_BUFF_COUNT; index++) {
+        const char* name;
+        int seconds = arpg_buff_seconds(index, &name);
+        if (seconds > 0) {
+            snprintf(buffs[buffCount++], sizeof(buffs[0]), "%s %d", name, seconds);
+            buffSignature = buffSignature * 31 + index * 1000 + seconds;
+        }
+    }
+    static unsigned int lastBuffSignature = 0;
+
+    if (en != last_values[2] || maxEn != last_values[3] || buffSignature != lastBuffSignature) {
         last_values[2] = en;
         last_values[3] = maxEn;
+        lastBuffSignature = buffSignature;
         hud_draw_globe(globe_windows[1], en, maxEn, true, "ENERGY");
+
+        unsigned char* buf = win_get_buf(globe_windows[1]);
+        int columnRight = globe_width / 2 - GLOBE_RADIUS - 4;
+        if (buf != NULL && buffCount > 0 && columnRight > 30) {
+            int oldFont = text_curr();
+            text_font(101);
+            int lineHeight = text_height() + 3;
+            int top = (HUD_HEIGHT - lineHeight * buffCount) / 2;
+            for (int index = 0; index < buffCount; index++) {
+                int width = text_width(buffs[index]);
+                int x = std::max(2, columnRight - width);
+                text_to_buf(buf + (top + index * lineHeight) * globe_width + x, buffs[index], globe_width - x, globe_width, rgb5(6, 28, 31));
+            }
+            text_font(oldFont);
+            win_draw(globe_windows[1]);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Minimap (D2 / PoE overlay map, as a radar in the top-right corner): walls,
+// loot, monsters coloured by rank, party members and the player.
+// ---------------------------------------------------------------------------
+
+#define MAP_WIDTH 200
+#define MAP_HEIGHT 150
+// Screen pixels per minimap pixel. A hex is 32x16 screen pixels.
+#define MAP_SCALE 12
+
+static int map_window = -1;
+static unsigned int map_next_draw = 0;
+static bool map_enabled = true;
+static std::vector<int> map_walls;
+static int map_walls_key = -1;
+
+static void hud_destroy_map()
+{
+    if (map_window != -1) {
+        win_delete(map_window);
+        map_window = -1;
+    }
+}
+
+// Walls never move, so they are collected once per level.
+static void map_collect_walls()
+{
+    int key = map_get_index_number() * 4 + map_elevation;
+    if (key == map_walls_key) {
+        return;
+    }
+    map_walls_key = key;
+    map_walls.clear();
+    for (Object* obj = obj_find_first_at(map_elevation); obj != NULL; obj = obj_find_next_at()) {
+        if (obj->tile == -1 || (obj->flags & OBJECT_HIDDEN) != 0) {
+            continue;
+        }
+        int type = FID_TYPE(obj->fid);
+        if (type == OBJ_TYPE_WALL || (type == OBJ_TYPE_SCENERY && (obj->flags & OBJECT_NO_BLOCK) == 0)) {
+            map_walls.push_back(obj->tile);
+        }
+    }
+}
+
+static void map_plot(unsigned char* buf, int dudeX, int dudeY, int tile, int size, int color)
+{
+    int x;
+    int y;
+    if (tile_coord(tile, &x, &y, map_elevation) == -1) {
+        return;
+    }
+    int px = MAP_WIDTH / 2 + (x - dudeX) / MAP_SCALE;
+    int py = MAP_HEIGHT / 2 + (y - dudeY) / MAP_SCALE;
+    for (int dy = 0; dy < size; dy++) {
+        for (int dx = 0; dx < size; dx++) {
+            int sx = px + dx - size / 2;
+            int sy = py + dy - size / 2;
+            if (sx > 0 && sy > 0 && sx < MAP_WIDTH - 1 && sy < MAP_HEIGHT - 1) {
+                buf[sy * MAP_WIDTH + sx] = (unsigned char)color;
+            }
+        }
+    }
+}
+
+static void hud_update_map(unsigned int now)
+{
+    if (!map_enabled || obj_dude == NULL || obj_dude->tile == -1 || intface_is_hidden() || !intface_is_enabled()) {
+        hud_destroy_map();
+        return;
+    }
+
+    if (map_window == -1) {
+        map_window = win_add(screenGetWidth() - MAP_WIDTH - 6, 6, MAP_WIDTH, MAP_HEIGHT, colorTable[0], 0);
+        if (map_window == -1) {
+            return;
+        }
+        map_next_draw = 0;
+    }
+
+    if (now < map_next_draw) {
+        return;
+    }
+    map_next_draw = now + 200;
+
+    unsigned char* buf = win_get_buf(map_window);
+    if (buf == NULL) {
+        return;
+    }
+
+    map_collect_walls();
+
+    int dudeX;
+    int dudeY;
+    tile_coord(obj_dude->tile, &dudeX, &dudeY, map_elevation);
+
+    memset(buf, rgb5(1, 1, 2), MAP_WIDTH * MAP_HEIGHT);
+
+    int wallColor = rgb5(11, 10, 8);
+    for (int tile : map_walls) {
+        map_plot(buf, dudeX, dudeY, tile, 2, wallColor);
+    }
+
+    // Loot and critters.
+    for (Object* obj = obj_find_first_at(map_elevation); obj != NULL; obj = obj_find_next_at()) {
+        if (obj->tile == -1 || (obj->flags & OBJECT_HIDDEN) != 0 || obj == obj_dude) {
+            continue;
+        }
+        int type = FID_TYPE(obj->fid);
+        if (type == OBJ_TYPE_ITEM && obj->owner == NULL) {
+            map_plot(buf, dudeX, dudeY, obj->tile, 1, rgb5(28, 28, 28));
+        } else if (type == OBJ_TYPE_SCENERY) {
+            int shrine = arpg_shrine_state(obj);
+            if (shrine != -1) {
+                map_plot(buf, dudeX, dudeY, obj->tile, 4, shrine == 1 ? rgb5(6, 28, 31) : rgb5(4, 10, 12));
+            }
+        } else if (type == OBJ_TYPE_CRITTER && (obj->data.critter.combat.results & DAM_DEAD) == 0) {
+            int rank = 0;
+            char name[48];
+            char mods[16];
+            int color;
+            if (isPartyMember(obj)) {
+                color = rgb5(6, 28, 6);
+            } else if (arpg_monster_info(obj, &rank, name, sizeof(name), mods, sizeof(mods)) && rank == 3) {
+                color = rgb5(31, 24, 6);
+            } else if (rank == 2) {
+                color = rgb5(10, 14, 31);
+            } else if (arpg_is_attackable(obj)) {
+                color = rgb5(31, 4, 4);
+            } else {
+                color = rgb5(24, 22, 14);
+            }
+            map_plot(buf, dudeX, dudeY, obj->tile, rank >= 2 ? 4 : 3, color);
+        }
+    }
+
+    // The player: a green cross.
+    int cx = MAP_WIDTH / 2;
+    int cy = MAP_HEIGHT / 2;
+    for (int d = -3; d <= 3; d++) {
+        buf[cy * MAP_WIDTH + cx + d] = (unsigned char)rgb5(8, 31, 8);
+        buf[(cy + d) * MAP_WIDTH + cx] = (unsigned char)rgb5(8, 31, 8);
+    }
+
+    // Frame.
+    int frame = rgb5(16, 13, 8);
+    for (int x = 0; x < MAP_WIDTH; x++) {
+        buf[x] = (unsigned char)frame;
+        buf[(MAP_HEIGHT - 1) * MAP_WIDTH + x] = (unsigned char)frame;
+    }
+    for (int y = 0; y < MAP_HEIGHT; y++) {
+        buf[y * MAP_WIDTH] = (unsigned char)frame;
+        buf[y * MAP_WIDTH + MAP_WIDTH - 1] = (unsigned char)frame;
+    }
+
+    win_draw(map_window);
+}
+
+void arpg_hud_toggle_minimap()
+{
+    map_enabled = !map_enabled;
+    if (!map_enabled) {
+        hud_destroy_map();
     }
 }
 
@@ -653,6 +850,13 @@ void arpg_hud_tick(unsigned int now)
     } else {
         hud_destroy_xp();
     }
+
+    static bool mapConfigRead = false;
+    if (!mapConfigRead) {
+        mapConfigRead = true;
+        configGetBool(&game_config, "arpg", "minimap", &map_enabled);
+    }
+    hud_update_map(now);
 }
 
 void arpg_hud_reset()
@@ -660,6 +864,8 @@ void arpg_hud_reset()
     hud_destroy_windows();
     bar_destroy();
     hud_destroy_xp();
+    hud_destroy_map();
+    map_walls_key = -1;
     for (int slot = 0; slot < 5; slot++) {
         last_belt[slot] = -1;
     }

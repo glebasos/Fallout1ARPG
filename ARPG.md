@@ -104,7 +104,8 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
   quarter of the target's current life, an eighth for champions/uniques), **chill** (+3-9 cold damage, the
   target moves and attacks at half speed for 3 s).
 - **D2 item art (optional, local only)**: with a Diablo II install next to the workspace, run
-  `python tools/d2art/d2art.py` (from the workspace root). It pulls each homage unique's inventory picture out of
+  `python tools/d2art/d2art.py` from the workspace root (the tool lives in the workspace next to
+  `tools/d2data`, not in this repo). It pulls each homage unique's inventory picture out of
   your own D2 MPQs and writes Fallout FRMs to `Fallout/DATA/art/inven` and `Fallout/DATA/art/items` (ground art
   is the same picture laid on the floor). The game uses them for the inventory, the hand slot and the ground;
   without them the base Fallout item's art is used. These files are never committed or shipped.
@@ -159,9 +160,10 @@ cmake --build build
 Design numbers (champion/unique life, XP and modifier list, pack sizes) come from Diablo II's own data tables
 (`MonUMod.txt`, `MonStats.txt`, ...), read from a local D2 install with a small extractor built on
 [AbyssEngine](https://github.com/AbyssEngine/AbyssEngine)'s MIT-licensed MPQ reader. AbyssEngine (a clean-room
-D2 engine in C) is a reference and a source we may copy code from (keep its MIT notice). No Diablo II data,
-names or assets are included here: the optional D2 item art is generated on the player's machine from their own
-D2 install (`tools/d2art`).
+D2 engine in C) is a reference and a source we may copy code from (keep its MIT notice). No Diablo II data or
+assets are included here, and no D2 names are used in game (D2 originals are named only as credits for the
+homage uniques). The optional D2 item art is generated on the player's machine from their own D2 install
+(`tools/d2art` in the workspace).
 
 ## Code map
 - `src/game/arpg.cc` – real-time combat, AI tick, energy/specials, loot, hold-to-move, control schemes

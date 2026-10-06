@@ -1405,15 +1405,31 @@ static void arpg_populate_level()
         // Magic item affixes live in object flag bits vanilla never uses;
         // prove no shipped map sets them.
         int flagged = 0;
+        int checked = 0;
+        // Top-level objects and everything carried (one level of containers
+        // nested in inventories too).
+        std::vector<Object*> pending;
         for (Object* obj = obj_find_first_at(map_elevation); obj != NULL; obj = obj_find_next_at()) {
+            pending.push_back(obj);
+        }
+        for (size_t index = 0; index < pending.size(); index++) {
+            Object* obj = pending[index];
+            checked++;
             if ((obj->flags & ARPG_ITEM_AFFIX_MASK) != 0) {
                 flagged++;
                 if (flagged <= 3) {
                     arpg_log("ARPG: affix bits set on pid %d flags 0x%x\n", obj->pid, obj->flags);
                 }
             }
+            int type = PID_TYPE(obj->pid);
+            if (type == OBJ_TYPE_CRITTER || type == OBJ_TYPE_ITEM) {
+                Inventory* inventory = &(obj->data.inventory);
+                for (int item = 0; item < inventory->length && pending.size() < 20000; item++) {
+                    pending.push_back(inventory->items[item].item);
+                }
+            }
         }
-        arpg_log("ARPG: level %d affix-bit objects: %d\n", key, flagged);
+        arpg_log("ARPG: level %d affix-bit objects: %d of %d\n", key, flagged, checked);
     }
 
     // Packs don't respawn until some game time has passed since they were

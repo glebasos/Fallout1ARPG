@@ -71,6 +71,15 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
   life and energy), Armor (half damage taken, 96 s), Combat (double damage, 96 s), Energy (fast energy, 96 s),
   Experience (+50% XP, 144 s), Purifying (no radiation or poison, 144 s) or Monster (the nearest monster becomes
   a unique). Active boosts count down next to the ENERGY globe. `shrines=0` turns them off.
+- **Magic items**: dropped weapons and armor can be magic (blue name, one affix) or rare (yellow, two),
+  e.g. "Vicious Assault Rifle of Haste". Weapon affixes: Vicious (+25% damage), Brutal (+50%), Burning (+2-6),
+  Shocking (+3-8), Vampiric (heal 10% of damage), Deadly (15% double damage), of Speed (+25% attack speed),
+  of Haste (+50%), of the Leech (heal 15%), of Slaying (+40% vs champions and uniques), of Fortune (more and
+  better loot), of Power (+15%). Armor: Sturdy (-10% damage taken), Reinforced (-20%), Regenerating (+1 HP every
+  4 s), Lead-Lined (sheds radiation), of Thorns (melee attackers take 30% back), of Vigor (+50% energy regen),
+  of Evasion (10% of hits miss), of Fortune. Champions and uniques drop better items; a unique's guaranteed
+  piece of gear is always at least magic. Magic items sell for 1.5x, rare for 2.5x, and never stack with
+  plain copies. The affixes are saved with the item.
 - **Caps** are picked up just by walking past them.
 - **Death** works like Diablo II: a killing blow from a monster drops you for three seconds, then you rise again at
   the map entrance with full life, losing 10% of the caps you carry. Monsters forget you while you're down.

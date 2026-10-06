@@ -781,6 +781,7 @@ void obj_render_pre_roof(Rect* rect, int elevation)
         // out of bounds (see `obj_render_outline`).
         outlineCount = 0;
         if ((obj_mouse_flat->flags & OBJECT_HIDDEN) == 0
+            && !arpg_cursor_hides_hex(obj_mouse_flat)
             && (obj_mouse_flat->outline & OUTLINE_TYPE_MASK) != 0
             && (obj_mouse_flat->outline & OUTLINE_DISABLED) == 0) {
             outlinedObjects[outlineCount++] = obj_mouse_flat;
@@ -830,7 +831,7 @@ void obj_render_pre_roof(Rect* rect, int elevation)
                     if ((objectListNode->obj->flags & OBJECT_HIDDEN) == 0) {
                         obj_render_object(objectListNode->obj, &updatedRect, lightIntensity);
 
-                        if ((objectListNode->obj->outline & OUTLINE_TYPE_MASK) != 0) {
+                        if ((objectListNode->obj->outline & OUTLINE_TYPE_MASK) != 0 && !arpg_cursor_hides_hex(objectListNode->obj)) {
                             if ((objectListNode->obj->outline & OUTLINE_DISABLED) == 0 && outlineCount < 100) {
                                 outlinedObjects[outlineCount++] = objectListNode->obj;
                             }
@@ -4684,6 +4685,11 @@ static void obj_render_object(Object* object, Rect* rect, int light)
 {
     int type = FID_TYPE(object->fid);
     if (art_get_disable(type)) {
+        return;
+    }
+
+    // ARPG: the move-mode floor hex is replaced by a screen pointer.
+    if (arpg_cursor_hides_hex(object)) {
         return;
     }
 

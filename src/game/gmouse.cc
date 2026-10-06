@@ -1314,7 +1314,21 @@ int gmouse_set_cursor(int cursor)
     gmouse_current_cursor = cursor;
     gmouse_current_cursor_key = mouseCursorFrmHandle;
 
+    // ARPG: move mode may draw its own pointer over MOUSE_CURSOR_NONE.
+    arpg_cursor_on_set(cursor);
+
     return 0;
+}
+
+// ARPG: re-set the current cursor's art even though the type is unchanged
+// (the ARPG pointer hands the shape back this way).
+void gmouse_reload_cursor()
+{
+    int cursor = gmouse_current_cursor;
+    gmouse_current_cursor = -1;
+    if (gmouse_set_cursor(cursor) != 0) {
+        gmouse_current_cursor = cursor;
+    }
 }
 
 // 0x44447C

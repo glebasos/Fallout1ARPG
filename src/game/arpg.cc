@@ -259,6 +259,7 @@ static bool always_run = true;
 static bool labels_always = false;
 // X: red outline around living enemies, so they stand out from corpses.
 static bool enemy_outline = true;
+static bool screen_cursor = true;
 static bool rmb_toggles_mode = false;
 static bool hold_to_move = true;
 static bool loot_drops = true;
@@ -385,6 +386,7 @@ static bool autotest_loot = false;
 static bool autotest_manual_caps = false;
 static bool autotest_corpse_items = false;
 static bool autotest_rmb = false;
+static bool autotest_cursor = false;
 static int autotest_swap = 0;
 // Steps the map zoom every 3.5 s and checks the mouse mapping.
 static int autotest_zoom = 0;
@@ -599,6 +601,7 @@ bool* arpg_option_flag(const char* key)
         { "damage_numbers", &show_numbers },
         { "labels_always", &labels_always },
         { "enemy_outline", &enemy_outline },
+        { "screen_cursor", &screen_cursor },
         { "loot_drops", &loot_drops },
         { "inventory_drops", &inventory_drops },
         { "auto_caps", &auto_caps },
@@ -625,6 +628,11 @@ int* arpg_option_int(const char* key)
         return &loot_pct;
     }
     return NULL;
+}
+
+bool arpg_screen_cursor()
+{
+    return screen_cursor;
 }
 
 bool arpg_enemy_outline(Object* obj)
@@ -761,6 +769,7 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "rmb_toggles_mode", &rmb_toggles_mode);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "labels_always", &labels_always);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "enemy_outline", &enemy_outline);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "screen_cursor", &screen_cursor);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "loot_drops", &loot_drops);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "inventory_drops", &inventory_drops);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "auto_caps", &auto_caps);
@@ -810,6 +819,7 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_manual_caps", &autotest_manual_caps);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_corpse_items", &autotest_corpse_items);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_rmb", &autotest_rmb);
+    configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_cursor", &autotest_cursor);
     // Autotest: swap weapons (B) every N ms (pair with autotest_wasd).
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_swap", &autotest_swap);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_zoom", &autotest_zoom);
@@ -838,7 +848,7 @@ void arpg_init()
 
     // Command-line test switches are merged into game_config, which CE saves
     // back to fallout.cfg on exit. Neutralize them so they don't stick.
-    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_swap", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_loot", "autotest_manual_caps", "autotest_corpse_items", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile", "autotest_sweep_encounters", "autotest_rmb", "autotest_hover", "autotest_zoom", "autotest_hang", "autotest_options", "autotest_camera_look" };
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_swap", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_loot", "autotest_manual_caps", "autotest_corpse_items", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile", "autotest_sweep_encounters", "autotest_rmb", "autotest_hover", "autotest_zoom", "autotest_hang", "autotest_options", "autotest_camera_look", "autotest_cursor" };
     for (const char* key : testKeys) {
         char* value;
         if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
@@ -5082,6 +5092,60 @@ void arpg_tick()
             rmbStep++;
         }
 
+        // Pointer test: park the mouse on bare floor, on the nearest enemy and
+        // on floor again in the use mode (F), logging the pointer variant
+        // (1 move, 2 loot, 3 attack, 0 = gmouse's own cursor) and a shot.
+        static int cursorStep = 0;
+        static unsigned int nextCursor = 0;
+        if (autotest_cursor && now - autotest_start > 4000 && now >= nextCursor && cursorStep < 8) {
+            int step = cursorStep++;
+            nextCursor = now + 1500;
+            if (step % 2 == 1) {
+                arpg_log("ARPG autotest: cursor step %d mode %d variant %d\n", step / 2, gmouse_3d_get_mode(), arpg_cursor_variant());
+                dump_screen();
+            } else {
+                int x;
+                int y;
+                int tile = obj_dude->tile;
+                Object* enemy = NULL;
+                if (step == 2) {
+                    arpg_refresh_list();
+                    for (int index = 0; index < crit_count; index++) {
+                        if (crit_list[index]->elevation == map_elevation && arpg_is_attackable(crit_list[index])
+                            && (enemy == NULL || obj_dist(obj_dude, crit_list[index]) < obj_dist(obj_dude, enemy))) {
+                            enemy = crit_list[index];
+                        }
+                    }
+                    if (enemy != NULL) {
+                        if (obj_dist(obj_dude, enemy) > 5) {
+                            // Bring it on screen, a few hexes NE of the player.
+                            Rect rect;
+                            obj_move_to_tile(enemy, tile_num_in_direction(obj_dude->tile, 0, 4), obj_dude->elevation, &rect);
+                            tile_refresh_rect(&rect, obj_dude->elevation);
+                        }
+                        tile = enemy->tile;
+                        arpg_log("ARPG autotest: cursor enemy %s at %d hexes\n", critter_name(enemy), obj_dist(obj_dude, enemy));
+                    }
+                } else {
+                    tile = tile_num_in_direction(obj_dude->tile, 2, 4);
+                }
+                if (step == 2) {
+                    // Monsters don't stand still: look right away.
+                    nextCursor = now + 200;
+                }
+                if (step == 4 || step == 6) {
+                    arpg_handle_key(KEY_LOWERCASE_F);
+                }
+                if (tile_coord(tile, &x, &y, map_elevation) == 0) {
+                    // Tile center, raised into a critter's body.
+                    int sx = x + 16;
+                    int sy = y + 8 - (enemy != NULL ? 20 : 0);
+                    arpg_zoom_world_to_screen(&sx, &sy);
+                    mouse_set_position(sx, sy);
+                }
+            }
+        }
+
         // Respawn test: drop to 1 HP so the next monster hit is a killing blow.
         static bool dieDone = false;
         if (autotest_die > 0 && !dieDone && now - autotest_start > (unsigned int)autotest_die * 1000) {
@@ -5465,6 +5529,7 @@ void arpg_tick()
         arpg_hold_tick(now);
         arpg_player_tick(now);
     }
+    arpg_cursor_tick(now);
     double hudStart = arpg_now_ms();
     arpg_hud_tick(now);
     prof_hud_ms += arpg_now_ms() - hudStart;
@@ -5621,7 +5686,9 @@ void arpg_rmb_special(bool inPlace)
 // F: Fallout's right-click cursor switch (move/attack <-> use/talk/look).
 static void arpg_toggle_cursor_mode()
 {
-    if (gmouse_3d_is_on()) {
+    // Not gated on the hex being shown: gmouse hides it while the view
+    // scrolls, which with the locked camera is whenever the player moves.
+    if (gmouse_is_enabled() && gmouse_3d_modes_are_enabled()) {
         gmouse_3d_toggle_mode();
         gsound_play_sfx_file("ib1p1xx1");
     }

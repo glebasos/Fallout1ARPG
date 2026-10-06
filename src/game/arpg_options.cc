@@ -66,6 +66,7 @@ static const ArpgOption column_left[] = {
     { OPT_CONFIG, "hotkey_bar", "Hotkey bar", "Keycap slots for flasks, aimed shots, dodge, special and reload.", true },
     { OPT_MINIMAP, "minimap", "Minimap (V)", "Top-right map of walls, items, monsters and shrines.", true },
     { OPT_FLAG, "damage_numbers", "Damage numbers", "Floating damage, miss and heal numbers.", true },
+    { OPT_FLAG, "screen_cursor", "Pointer cursor", "Move/attack mode uses a pixel-exact pointer (white: move, gold: loot, red reticle: attack) instead of the red floor hex.", true },
     { OPT_FLAG, "enemy_outline", "Enemy outlines (X)", "Red outline around every living enemy.", true },
     { OPT_ZOOM_SMOOTH, "zoom_smooth", "Smooth zoom", "Filtered scaling when the map is zoomed with the mouse wheel. Off = sharp pixels.", true },
     { OPT_FLAG, "camera_center", "Camera locked on player", "The view stays centered on the player (no screen-edge scrolling).", false },

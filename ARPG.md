@@ -34,6 +34,7 @@ loot labels are drawn in the map and scale with it.
 | **W** | Weapon swap (switch active hand, like Diablo II's W; Fallout's B still works) |
 | **V** | Show/hide the minimap |
 | **X** | Toggle the red outline around living enemies (anything you can attack on a plain click), so they stand out from corpses. On by default; `[arpg] enemy_outline=0` starts with it off. Works in every control scheme |
+| Mouse pointer | In move/attack mode the cursor is a normal pixel-exact pointer instead of the red floor hex: white arrow = move, gold arrow = pick up the item under it, orange reticle = a click attacks (in WASD / Shift it lights up whenever the 2-hex snap would hit an enemy). `[arpg] screen_cursor=0` (or "Pointer cursor" in the options page) brings the hex back |
 | Tab | Automap |
 | Crosshair mode (right-click empty ground) | Attack anyone, including neutrals |
 
@@ -141,7 +142,7 @@ Q drinks a stimpak, Shift walks, 1–8 are skill hotkeys, Z is the Pip-Boy clock
 ## ARPG options page (ESC menu)
 ESC → **ARPG OPTIONS** (or press A in the Options menu) lists every on/off switch the mod added: ARPG mode,
 control scheme, always run, hold to move, right click behaviour, shoot on the move, respawn, globes/XP bar,
-hotkey bar, minimap, damage numbers, enemy outlines, smooth zoom, loot drops, loot amount (50-500%), loot
+hotkey bar, minimap, damage numbers, pointer cursor, enemy outlines, smooth zoom, loot drops, loot amount (50-500%), loot
 labels and outlines, auto-pickup of caps / drugs / ammo, monster packs, shrines and raider reinforcements.
 Click a row to change it; hovering shows what it does. Changes apply at once (packs and shrines from the next
 area, ARPG mode after a restart) and are saved to the `[arpg]` keys below when the page closes.
@@ -149,7 +150,7 @@ area, ARPG mode after a restart) and are saved to the `[arpg]` keys below when t
 ## Config (`[arpg]` in fallout.cfg)
 `enabled`, `controls` (poe/wasd/classic), `dodge_cost` (20), `always_run`, `hold_to_move`, `rmb_toggles_mode` (0), `damage_numbers`, `globes`, `loot_drops`, `inventory_drops` (1), `loot_pct`,
 `energy_regen_pct`, `enemy_attack_delay_pct` (130), `player_attack_delay_pct` (100), `stagger_pct`,
-`player_stagger_pct`, `stagger_immunity_ms`, `leash_distance`, `labels_always`, `loot_highlight` (1), `enemy_outline` (1), `auto_caps`, `auto_consumables` (1), `auto_ammo` (1), `respawn` (1),
+`player_stagger_pct`, `stagger_immunity_ms`, `leash_distance`, `labels_always`, `loot_highlight` (1), `enemy_outline` (1), `screen_cursor` (1), `auto_caps`, `auto_consumables` (1), `auto_ammo` (1), `respawn` (1),
 `respawn_caps_pct` (10).
 
 Animation speeds (percent): `attack_anim_pct` (200), `aim_anim_pct` (300), `enemy_attack_anim_pct` (150),
@@ -184,6 +185,9 @@ player each time and logs whether it maps back to the player's tile (`OK`/`MISMA
 the values (`options ... now ...`), with screenshots of both pages.
 `[arpg]autotest_camera_look=1` parks the cursor near the right edge (camera_look); the camera logs
 `camera dude off X,Y target off X,Y moving=N` once a second while `camera_center` is on.
+`[arpg]autotest_cursor=1` (with `-NoBot`) parks the mouse on floor, on the nearest enemy (pulled next to the
+player), then on floor in the use mode and back (F), logging `cursor step N mode M variant V` (1 move, 2 loot,
+3 attack, 0 gmouse's own cursor) with a screenshot each.
 `[arpg]autotest_hover=1` walks the hotkey-bar tooltip across the slots (1.5 s each) for screenshots.
 `[arpg]dump_items=1` logs every item PID. Test keys are reset in fallout.cfg on exit, but other
 overrides like `controls` or `dodge_cost` are saved.
@@ -210,6 +214,8 @@ homage uniques). The optional D2 item art is generated on the player's machine f
   (`arpg_handle_key`, WASD tick, dodge, flasks), autotest.
 - `src/game/arpg_zoom.cc` – map zoom: render buffer of view size / zoom, scaled into the display window
   (`map_display_draw`); `tile_set_buffer` / `obj_set_buffer` / `text_object_set_buffer` retarget the renderer.
+- `src/game/arpg_cursor.cc` – the move/attack pointer (built at runtime, set with mouse_set_shape while gmouse
+  sits on MOUSE_CURSOR_NONE); object.cc skips drawing the floor hex while it is on.
 - `src/game/arpg_options.cc` – the ARPG options page (table of settings); `options.cc` adds its button.
 - `src/game/arpg_hud.cc` – globes, hotkey bar, target bar, XP bar, minimap and Alt labels. `src/game/arpg_crash.cc` – autotest crash reporter.
 - Hooks: `game_handle_input` → `arpg_handle_key` before Fallout's key switch, `combat()` / `combat_attack_this()` redirect, `main_game_loop` tick, `gmouse` click handling,

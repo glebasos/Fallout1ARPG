@@ -88,6 +88,7 @@ void gmouse_bk_process();
 void gmouse_handle_event(int mouseX, int mouseY, int mouseState);
 int gmouse_set_cursor(int cursor);
 int gmouse_get_cursor();
+void gmouse_reload_cursor();
 void gmouse_set_mapper_mode(int mode);
 void gmouse_3d_enable_modes();
 void gmouse_3d_disable_modes();

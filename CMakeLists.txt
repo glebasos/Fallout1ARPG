@@ -49,6 +49,7 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/game/arpg.cc"
     "src/game/arpg.h"
     "src/game/arpg_crash.cc"
+    "src/game/arpg_cursor.cc"
     "src/game/arpg_hud.cc"
     "src/game/arpg_options.cc"
     "src/game/arpg_zoom.cc"

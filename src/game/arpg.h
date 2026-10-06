@@ -101,6 +101,12 @@ bool arpg_is_hostile(Object* critter);
 bool arpg_is_attackable(Object* critter);
 // True when the X enemy outline should be drawn around this object (object.cc).
 bool arpg_enemy_outline(Object* obj);
+// Screen-space move/attack pointer instead of the floor hex (arpg_cursor.cc).
+bool arpg_screen_cursor();
+bool arpg_cursor_hides_hex(Object* obj);
+void arpg_cursor_on_set(int cursor);
+void arpg_cursor_tick(unsigned int now);
+int arpg_cursor_variant();
 
 bool arpg_is_engaged(Object* critter);
 

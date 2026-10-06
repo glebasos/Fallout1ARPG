@@ -6,6 +6,7 @@
 #include <algorithm>
 
 #include "game/anim.h"
+#include "game/arpg.h"
 #include "game/art.h"
 #include "game/combat.h"
 #include "game/config.h"
@@ -1348,7 +1349,12 @@ int intface_toggle_items(bool animated)
 
     itemCurrentItem = 1 - itemCurrentItem;
 
-    if (animated) {
+    // ARPG: D2-style instant swap that keeps the player moving (the vanilla
+    // put-away/take-out sequence clears the dude's animations and blocks input).
+    if (animated && arpg_enabled()) {
+        intface_redraw_items();
+        arpg_sync_dude_weapon_fid();
+    } else if (animated) {
         Object* item = itemButtonItems[itemCurrentItem].item;
         int animationCode = 0;
         if (item != NULL) {

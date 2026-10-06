@@ -371,6 +371,7 @@ static bool autotest_shrines = false;
 static bool autotest_gallery = false;
 static bool autotest_loot = false;
 static bool autotest_rmb = false;
+static int autotest_swap = 0;
 static bool autotest_swarm = false;
 static int autotest_magic = 0;
 static bool autotest_encounter = false;
@@ -715,6 +716,8 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_gallery", &autotest_gallery);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_loot", &autotest_loot);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_rmb", &autotest_rmb);
+    // Autotest: swap weapons (B) every N ms (pair with autotest_wasd).
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_swap", &autotest_swap);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_swarm", &autotest_swarm);
     config_get_value(&game_config, ARPG_CONFIG_SECTION, "autotest_magic", &autotest_magic);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "autotest_encounter", &autotest_encounter);
@@ -737,7 +740,7 @@ void arpg_init()
 
     // Command-line test switches are merged into game_config, which CE saves
     // back to fallout.cfg on exit. Neutralize them so they don't stick.
-    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_loot", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile", "autotest_sweep_encounters", "autotest_rmb", "autotest_hover" };
+    static const char* testKeys[] = { "autotest", "autoplay", "autotest_seconds", "autoshot_ms", "autotest_weapon", "autotest_ammo", "labels_always", "dump_items", "autotest_armor", "autotest_map", "autotest_xp", "autotest_wasd", "autotest_swap", "autotest_iframes", "autotest_god", "autotest_saveload", "autotest_sweep", "autotest_die", "autotest_shrines", "autotest_gallery", "autotest_loot", "autotest_swarm", "autotest_magic", "autotest_encounter", "autotest_hostile", "autotest_sweep_encounters", "autotest_rmb", "autotest_hover" };
     for (const char* key : testKeys) {
         char* value;
         if (config_get_string(&game_config, ARPG_CONFIG_SECTION, key, &value)) {
@@ -4238,6 +4241,56 @@ static void arpg_critter_tick(Object* critter, unsigned int now)
     }
 }
 
+static bool weapon_fid_pending = false;
+
+void arpg_sync_dude_weapon_fid()
+{
+    weapon_fid_pending = false;
+    if (obj_dude == NULL || FID_TYPE(obj_dude->fid) != OBJ_TYPE_CRITTER) {
+        return;
+    }
+
+    Object* item;
+    int code = 0;
+    if (intface_get_current_item(&item) == 0 && item != NULL && item_get_type(item) == ITEM_TYPE_WEAPON) {
+        code = item_w_anim_code(item);
+    }
+
+    if (((obj_dude->fid & 0xF000) >> 12) == code) {
+        return;
+    }
+
+    int anim = FID_ANIM_TYPE(obj_dude->fid);
+    if (anim != ANIM_STAND && anim != ANIM_WALK && anim != ANIM_RUNNING) {
+        // Mid-attack (or hit reaction): swapping the art now would cut the
+        // animation, so do it once the dude is standing or moving again.
+        weapon_fid_pending = true;
+        return;
+    }
+
+    // Keep the frame: the move code advances it and wraps on the new art.
+    int fid = art_id(OBJ_TYPE_CRITTER, obj_dude->fid & 0xFFF, anim, code, obj_dude->rotation + 1);
+    if (!art_exists(fid)) {
+        fid = art_id(OBJ_TYPE_CRITTER, obj_dude->fid & 0xFFF, ANIM_STAND, code, obj_dude->rotation + 1);
+    }
+
+    Rect rect;
+    obj_change_fid(obj_dude, fid, &rect);
+
+    CacheEntry* handle;
+    Art* art = art_ptr_lock(fid, &handle);
+    if (art != NULL) {
+        if (obj_dude->frame >= art_frame_max_frame(art)) {
+            Rect temp;
+            obj_set_frame(obj_dude, 0, &temp);
+            rect_min_bound(&rect, &temp, &rect);
+        }
+        art_ptr_unlock(handle);
+    }
+
+    tile_refresh_rect(&rect, obj_dude->elevation);
+}
+
 void arpg_tick()
 {
     ArpgTickTimer tickTimer;
@@ -4247,6 +4300,10 @@ void arpg_tick()
     }
 
     unsigned int now = get_time();
+
+    if (weapon_fid_pending) {
+        arpg_sync_dude_weapon_fid();
+    }
 
     int mapIndex = map_get_index_number();
     if (mapIndex != last_map || map_elevation != last_elevation) {
@@ -4612,6 +4669,17 @@ void arpg_tick()
                 }
                 break;
             }
+        }
+
+        static unsigned int nextSwap = 0;
+        if (autotest_swap > 0 && now - autotest_start > 2000 && now >= nextSwap) {
+            int tileBefore = obj_dude->tile;
+            arpg_log("ARPG autotest: swap before anim=%d weapon=%d tile=%d moving=%d\n",
+                FID_ANIM_TYPE(obj_dude->fid), (obj_dude->fid & 0xF000) >> 12, tileBefore, anim_busy(obj_dude));
+            game_handle_input(KEY_LOWERCASE_B, false);
+            arpg_log("ARPG autotest: swap after anim=%d weapon=%d tile=%d moving=%d hand=%d\n",
+                FID_ANIM_TYPE(obj_dude->fid), (obj_dude->fid & 0xF000) >> 12, obj_dude->tile, anim_busy(obj_dude), intface_is_item_right_hand());
+            nextSwap = now + autotest_swap;
         }
 
         // Right-button test: F twice (cursor mode round trip), then near-miss

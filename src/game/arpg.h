@@ -136,6 +136,11 @@ int arpg_ls_load_slot(int slot);
 void arpg_quick_heal();
 void arpg_quick_reload();
 
+// Weapon swap (intface_toggle_items): sets the dude's weapon art to the active
+// hand without the put-away/take-out sequence, keeping the current walk/run.
+// Deferred to arpg_tick while another animation (an attack) is playing.
+void arpg_sync_dude_weapon_fid();
+
 // Test harness: `[arpg]autotest=1` skips menus and starts a new game with the
 // combat premade character.
 bool arpg_autotest();

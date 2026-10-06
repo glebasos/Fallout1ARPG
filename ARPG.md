@@ -186,7 +186,7 @@ the values (`options ... now ...`), with screenshots of both pages.
 `[arpg]autotest_camera_look=1` parks the cursor near the right edge (camera_look); the camera logs
 `camera dude off X,Y target off X,Y moving=N` once a second while `camera_center` is on.
 `[arpg]autotest_cursor=1` (with `-NoBot`) parks the mouse on floor, on the nearest enemy (pulled next to the
-player), then on floor in the use mode and back (F), logging `cursor step N mode M variant V` (1 move, 2 loot,
+player), on floor in the use mode and back (F), then on a dropped 10mm pistol, logging `cursor step N mode M variant V` (1 move, 2 loot,
 3 attack, 0 gmouse's own cursor) with a screenshot each.
 `[arpg]autotest_hover=1` walks the hotkey-bar tooltip across the slots (1.5 s each) for screenshots.
 `[arpg]dump_items=1` logs every item PID. Test keys are reset in fallout.cfg on exit, but other

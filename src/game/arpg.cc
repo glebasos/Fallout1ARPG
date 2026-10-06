@@ -5092,12 +5092,12 @@ void arpg_tick()
             rmbStep++;
         }
 
-        // Pointer test: park the mouse on bare floor, on the nearest enemy and
-        // on floor again in the use mode (F), logging the pointer variant
+        // Pointer test: park the mouse on bare floor, on the nearest enemy, on
+        // floor in the use mode (F) and back, then on a dropped item, logging the pointer variant
         // (1 move, 2 loot, 3 attack, 0 = gmouse's own cursor) and a shot.
         static int cursorStep = 0;
         static unsigned int nextCursor = 0;
-        if (autotest_cursor && now - autotest_start > 4000 && now >= nextCursor && cursorStep < 8) {
+        if (autotest_cursor && now - autotest_start > 4000 && now >= nextCursor && cursorStep < 10) {
             int step = cursorStep++;
             nextCursor = now + 1500;
             if (step % 2 == 1) {
@@ -5108,6 +5108,7 @@ void arpg_tick()
                 int y;
                 int tile = obj_dude->tile;
                 Object* enemy = NULL;
+                Object* lootItem = NULL;
                 if (step == 2) {
                     arpg_refresh_list();
                     for (int index = 0; index < crit_count; index++) {
@@ -5126,6 +5127,11 @@ void arpg_tick()
                         tile = enemy->tile;
                         arpg_log("ARPG autotest: cursor enemy %s at %d hexes\n", critter_name(enemy), obj_dist(obj_dude, enemy));
                     }
+                } else if (step == 8) {
+                    // A 10mm pistol (pid 8) dropped next to the player: loot.
+                    lootItem = arpg_drop_item(obj_dude, 8, 1);
+                    tile = lootItem != NULL ? lootItem->tile : obj_dude->tile;
+                    arpg_log("ARPG autotest: cursor item %p tile %d (dude %d)\n", (void*)lootItem, tile, obj_dude->tile);
                 } else {
                     tile = tile_num_in_direction(obj_dude->tile, 2, 4);
                 }
@@ -5136,7 +5142,15 @@ void arpg_tick()
                 if (step == 4 || step == 6) {
                     arpg_handle_key(KEY_LOWERCASE_F);
                 }
-                if (tile_coord(tile, &x, &y, map_elevation) == 0) {
+                Rect bounds;
+                if (lootItem != NULL) {
+                    // Middle of the item's sprite.
+                    obj_bound(lootItem, &bounds);
+                    int sx = (bounds.ulx + bounds.lrx) / 2;
+                    int sy = (bounds.uly + bounds.lry) / 2;
+                    arpg_zoom_world_to_screen(&sx, &sy);
+                    mouse_set_position(sx, sy);
+                } else if (tile_coord(tile, &x, &y, map_elevation) == 0) {
                     // Tile center, raised into a critter's body.
                     int sx = x + 16;
                     int sy = y + 8 - (enemy != NULL ? 20 : 0);

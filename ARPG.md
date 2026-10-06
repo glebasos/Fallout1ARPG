@@ -26,6 +26,7 @@ game to cycle them.
 | **1–5** | Flasks: 1 (super) stimpak, 2 RadAway / Rad-X, 3 Buffout, 4 Mentats, 5 Psycho / Nuka-Cola |
 | **Space** | Dodge roll toward the cursor, with 0.6 s of invulnerability (20 Energy) |
 | **Z** | Toggle loot labels on/off (Alt still shows them while held) |
+| **W** | Weapon swap (switch active hand, like Diablo II's W; Fallout's B still works) |
 | Tab | Automap |
 | Crosshair mode (right-click empty ground) | Attack anyone, including neutrals |
 

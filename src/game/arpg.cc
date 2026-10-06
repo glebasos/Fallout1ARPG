@@ -3644,12 +3644,15 @@ static void arpg_wasd_dir(int* dx, int* dy)
         *dx += 1;
     }
 
-    if (arpg_test && autotest_wasd >= 0 && autotest_wasd <= 3 && autotest_start != 0) {
+    if (arpg_test && autotest_wasd >= 0 && autotest_wasd <= 4 && autotest_start != 0) {
         static const int dirs[4][2] = { { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 } };
-        // Hold the test direction for 3 s, then let go for 1 s.
-        if ((get_time() - autotest_start) % 4000 < 3000) {
-            *dx = dirs[autotest_wasd][0];
-            *dy = dirs[autotest_wasd][1];
+        // Hold the test direction for 3 s, then let go for 1 s. Mode 4
+        // turns W, D, S, A in turn (kiting in circles).
+        unsigned int elapsed = get_time() - autotest_start;
+        int dir = autotest_wasd == 4 ? (int)((elapsed / 4000) % 4) : autotest_wasd;
+        if (elapsed % 4000 < 3000) {
+            *dx = dirs[dir][0];
+            *dy = dirs[dir][1];
         }
     }
 }
@@ -3861,6 +3864,13 @@ bool arpg_handle_key(int key)
     switch (key) {
     case KEY_LOWERCASE_W:
     case KEY_UPPERCASE_W:
+        if (controls == ARPG_CONTROLS_POE) {
+            // D2 weapon swap: switch the active hand (Fallout's B).
+            gsound_play_sfx_file("ib1p1xx1");
+            intface_toggle_items(true);
+            return true;
+        }
+        return controls == ARPG_CONTROLS_WASD;
     case KEY_LOWERCASE_A:
     case KEY_UPPERCASE_A:
     case KEY_LOWERCASE_S:

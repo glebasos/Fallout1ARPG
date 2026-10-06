@@ -109,7 +109,8 @@ Animation speeds (percent): `attack_anim_pct` (200), `aim_anim_pct` (300), `enem
 
 Packs: `packs` (1), `pack_min` (2), `pack_max` (4), `pack_density_pct` (100), `champion_pct` (10),
 `unique_pct` (7), `pack_respawn_hours` (12), `max_spawns` per level (60), `aggro_radius` (9).
-HUD and extras: `minimap` (1), `shrines` (1), `shrine_scenery` (scenery proto number, 1 = Burning Metal Barrel).
+HUD and extras: `minimap` (1), `shrines` (1), `shrine_scenery` (scenery proto number, 1 = Burning Metal Barrel),
+`raider_packs` (1), `party_damage_taken_pct` (70: followers take 30% less damage, like D2 mercenaries).
 
 ## Test harness (developers)
 ```

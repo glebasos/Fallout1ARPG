@@ -178,6 +178,7 @@ static int random_map_index = -1;
 // Humans that already called in their raider pack.
 static std::vector<Object*> reinforced;
 static bool raider_packs = true;
+static int party_damage_taken_pct = 70;
 static unsigned int populate_time = 0;
 static unsigned int next_aggro_check = 0;
 
@@ -619,6 +620,7 @@ void arpg_init()
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "packs", &packs_enabled);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "shrines", &shrines_enabled);
     configGetBool(&game_config, ARPG_CONFIG_SECTION, "raider_packs", &raider_packs);
+    config_get_value(&game_config, ARPG_CONFIG_SECTION, "party_damage_taken_pct", &party_damage_taken_pct);
     // Shrines are drawn with a scenery proto: a Burning Metal Barrel by
     // default (the Altars are huge multi-hex Cathedral pieces).
     int shrineScenery = 1;
@@ -2185,6 +2187,10 @@ static void arpg_scale_damage(Attack* attack)
         }
         if (victim == obj_dude && arpg_buff(SHRINE_ARMOR)) {
             value *= 0.5;
+        }
+        // Followers (D2 mercenaries) would melt in pack fights.
+        if (victim != obj_dude && isPartyMember(victim)) {
+            value = value * party_damage_taken_pct / 100.0;
         }
         ArpgMonster* defender = arpg_monster(victim);
         if (defender != NULL) {
